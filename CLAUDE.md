@@ -171,11 +171,21 @@ OAuth client IDs are not secret (unlike client secrets) - the real values can li
 2. Also create Android and iOS OAuth client IDs (needed for the native sign-in UI/consent
    screen, package name + SHA-1 fingerprint for Android, bundle ID for iOS) - see
    `moneyexchange_app`'s setup section below.
-3. Put the **Web** client ID in `MoneyExchange.Api/appsettings.json`:
+3. Put **both** the Web and iOS client IDs in `MoneyExchange.Api/appsettings.json`'s
+   `GoogleAuth:Audiences` array - confirmed empirically, not just in theory:
    ```json
-   "GoogleAuth": { "Audiences": ["<web-client-id>.apps.googleusercontent.com"] }
+   "GoogleAuth": { "Audiences": [
+     "<web-client-id>.apps.googleusercontent.com",
+     "<ios-client-id>.apps.googleusercontent.com"
+   ] }
    ```
-4. Restart the API. `POST /api/auth/google` will now accept ID tokens whose audience matches.
+   **Why both**: on Android, `google_sign_in`'s Credential Manager flow issues an ID token
+   audienced to the `serverClientId` (the Web client), as expected. On iOS, even with
+   `serverClientId` also set, the SDK issues the ID token audienced to the **iOS** client
+   (`GIDClientID`) instead - passing only the Web client ID here makes the backend reject every
+   iOS sign-in with `JWT contains untrusted 'aud' claim`. The Android client ID is not needed
+   here since Android never emits a token audienced to it in this flow.
+4. Restart the API. `POST /api/auth/google` will now accept ID tokens from both platforms.
 
 ## Running locally
 
@@ -227,23 +237,30 @@ lib/
     home/presentation/home_screen.dart   placeholder post-login screen
 ```
 
-## Google Sign-In setup (do this before running for real)
+## Google Sign-In setup (verified working on both platforms)
 
 Google Sign-In cannot complete without real OAuth client IDs from *your* Google Cloud project -
-this can't be scaffolded generically. Without it, `flutter run` shows the sign-in screen fine,
-but tapping the button fails with a `PlatformException` naming the missing config (confirmed
-during development - this is the expected, only-fixable-by-you failure mode, not a bug).
+this can't be scaffolded generically. What's below is confirmed working end-to-end (real Google
+account -> backend JWT -> row in the Supabase `Users` table) on both an Android emulator and the
+iOS Simulator, not just theory.
 
-1. Complete steps 1-2 in the backend's "Google Sign-In setup" section above (Web + Android + iOS
-   OAuth client IDs).
-2. **Android**: download `google-services.json` from Firebase/Google Cloud Console for the
-   Android client, place it at `moneyexchange_app/android/app/google-services.json`. Register
-   your debug and release SHA-1 fingerprints against the Android OAuth client
-   (`./gradlew signingReport` in `android/` gives you the debug one).
-3. **iOS**: add `GIDClientID` (the iOS OAuth client ID) to
-   `moneyexchange_app/ios/Runner/Info.plist`, and a matching `CFBundleURLSchemes` entry (the
-   reversed client ID) - see the
-   [google_sign_in README](https://pub.dev/packages/google_sign_in) for the exact keys.
+1. Complete steps 1-3 in the backend's "Google Sign-In setup" section above: a Web client (for
+   `serverClientId`/backend audience) and an iOS client. **An Android-specific OAuth client
+   turned out not to be necessary** - `google_sign_in` v7's Credential Manager-based flow on
+   Android works with just the Web client ID passed as `serverClientId`; no
+   `google-services.json` and no SHA-1 registration required for this flow. (You'd still want a
+   properly configured Android client for a production release, but it wasn't needed to get
+   sign-in working.)
+2. **iOS** (already wired into `moneyexchange_app/ios/Runner/Info.plist` in this repo - update
+   the values if you regenerate your own OAuth clients): add `GIDClientID` set to the iOS client
+   ID, and a `CFBundleURLTypes` entry whose `CFBundleURLSchemes` is the reversed client ID
+   (`com.googleusercontent.apps.<client-id-prefix>`).
+3. Make sure the backend's `GoogleAuth:Audiences` includes **both** the Web and iOS client IDs
+   (see the "Why both" note above) - a missing iOS audience surfaces as the app appearing to
+   "sign in" (Google's account picker completes fine) but then bouncing straight back to the
+   sign-in screen, because the backend's `/api/auth/google` call fails silently in the UI (just
+   shows the generic error banner) while logging `JWT contains untrusted 'aud' claim` on the
+   backend - check that log first if this happens.
 4. Run with the Web client ID passed through:
    ```bash
    flutter run --dart-define=GOOGLE_SERVER_CLIENT_ID=<web-client-id>.apps.googleusercontent.com \
