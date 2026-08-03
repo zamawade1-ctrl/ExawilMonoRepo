@@ -11,6 +11,15 @@ public class Customer
 {
     public int Id { get; set; }
 
+    /// <summary>
+    /// The signed-in identity (Google account) this forwarding profile belongs to, if the
+    /// customer signed in via the app. Nullable for now - the registration form can still be
+    /// filled out standalone; the app wires this up once a signed-in user completes it.
+    /// </summary>
+    public int? UserId { get; set; }
+
+    public User? User { get; set; }
+
     [Required, MaxLength(120)]
     public string FullName { get; set; } = string.Empty;
 

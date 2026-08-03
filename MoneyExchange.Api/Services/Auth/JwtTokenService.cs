@@ -15,7 +15,15 @@ public class JwtTokenService : IJwtTokenService
         _configuration = configuration;
     }
 
-    public JwtToken CreateToken(Customer customer)
+    public JwtToken CreateToken(Customer customer) => CreateToken(
+        customer.Id.ToString(),
+        [new Claim("phoneNumber", customer.PhoneNumber), new Claim("subjectType", "customer")]);
+
+    public JwtToken CreateToken(User user) => CreateToken(
+        user.Id.ToString(),
+        [new Claim("email", user.Email), new Claim("subjectType", "user")]);
+
+    private JwtToken CreateToken(string subject, IEnumerable<Claim> extraClaims)
     {
         var jwtSection = _configuration.GetSection("Jwt");
         var key = jwtSection["Key"] ?? throw new InvalidOperationException("Jwt:Key is not configured.");
@@ -25,12 +33,12 @@ public class JwtTokenService : IJwtTokenService
 
         var expiresAtUtc = DateTime.UtcNow.AddMinutes(expiryMinutes);
 
-        var claims = new[]
+        var claims = new List<Claim>
         {
-            new Claim(JwtRegisteredClaimNames.Sub, customer.Id.ToString()),
-            new Claim("phoneNumber", customer.PhoneNumber),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new(JwtRegisteredClaimNames.Sub, subject),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
+        claims.AddRange(extraClaims);
 
         var credentials = new SigningCredentials(
             new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)),

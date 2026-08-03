@@ -21,10 +21,14 @@ builder.Services.AddScoped<IExchangeTransactionRepository, ExchangeTransactionRe
 builder.Services.AddScoped<ICustomerRepository, CustomerRepository>();
 builder.Services.AddScoped<IAuthRepository, AuthRepository>();
 builder.Services.AddScoped<IIncomingMoneyTransactionRepository, IncomingMoneyTransactionRepository>();
+builder.Services.AddScoped<IUserAuthRepository, UserAuthRepository>();
 
 // --- Telesom OTP: stub until the real Telesom API integration is wired in ---
 builder.Services.AddScoped<ITelesomOtpService, TelesomOtpService>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+
+// --- Google Sign-In: verified directly against Google's public keys, no hosted auth provider ---
+builder.Services.AddScoped<IGoogleTokenVerifier, GoogleTokenVerifier>();
 
 // --- Zaad / eDahab: stub clients until the real provider APIs are wired in ---
 builder.Services.AddScoped<IMoneyProviderClient, ZaadMoneyProviderClient>();

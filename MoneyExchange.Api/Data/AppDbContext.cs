@@ -11,6 +11,8 @@ public class AppDbContext : DbContext
 
     public DbSet<ExchangeTransaction> ExchangeTransactions => Set<ExchangeTransaction>();
 
+    public DbSet<User> Users => Set<User>();
+
     public DbSet<Customer> Customers => Set<Customer>();
 
     public DbSet<OtpVerification> OtpVerifications => Set<OtpVerification>();
@@ -27,10 +29,22 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Status).HasConversion<string>();
         });
 
+        modelBuilder.Entity<User>(entity =>
+        {
+            entity.HasIndex(e => e.Email).IsUnique();
+            entity.HasIndex(e => e.GoogleSubjectId).IsUnique();
+        });
+
         modelBuilder.Entity<Customer>(entity =>
         {
             entity.Property(e => e.ForwardingMethod).HasConversion<string>();
             entity.HasIndex(e => e.PhoneNumber).IsUnique();
+            entity.HasIndex(e => e.UserId).IsUnique();
+
+            entity.HasOne(e => e.User)
+                .WithOne()
+                .HasForeignKey<Customer>(e => e.UserId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<OtpVerification>(entity =>

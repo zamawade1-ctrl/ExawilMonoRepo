@@ -8,10 +8,21 @@ namespace MoneyExchange.Api.Controllers;
 public class AuthController : ApiControllerBase
 {
     private readonly IAuthRepository _authRepository;
+    private readonly IUserAuthRepository _userAuthRepository;
 
-    public AuthController(IAuthRepository authRepository)
+    public AuthController(IAuthRepository authRepository, IUserAuthRepository userAuthRepository)
     {
         _authRepository = authRepository;
+        _userAuthRepository = userAuthRepository;
+    }
+
+    // POST: api/auth/google
+    // The Flutter app's first-page sign-in: exchanges a Google ID token for our own JWT.
+    [HttpPost("google")]
+    public async Task<IActionResult> SignInWithGoogle([FromBody] GoogleSignInDto dto)
+    {
+        var response = await _userAuthRepository.SignInWithGoogleAsync(dto);
+        return HandleResponse(response);
     }
 
     // POST: api/auth/otp/request
