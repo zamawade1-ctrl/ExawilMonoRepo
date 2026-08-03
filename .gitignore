@@ -1,0 +1,25 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+
+## SQLite / local db artifacts
+*.db
+*.db-shm
+*.db-wal
+
+## User secrets / local overrides
+appsettings.*.local.json
+
+## IDE
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+## OS
+.DS_Store
+
+## Claude Code local state
+.claude/
