@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 class AppTheme {
   const AppTheme._();
 
-  static const Color _seedColor = Color(0xFF0F766E);
+  static const Color _seedColor = Color(0xFF059669);
 
   static ThemeData get light => _theme(Brightness.light);
 

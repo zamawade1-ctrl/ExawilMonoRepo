@@ -92,4 +92,33 @@ public class UserAuthRepository : IUserAuthRepository
             return ServiceResponse<UserAuthResponseDto>.Error("Could not complete Google sign-in.");
         }
     }
+
+    public async Task<ServiceResponse<bool>> DeleteAccountAsync(int userId)
+    {
+        try
+        {
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+            if (user is null)
+                return ServiceResponse<bool>.NotFound("Account not found.");
+
+            // The Customer -> User FK is SetNull, so deleting the user alone would leave the
+            // forwarding profile (phone number, PIN-less destination, bank details) orphaned in
+            // the database. Account deletion must remove that data too, so delete it explicitly.
+            var linkedCustomers = await _context.Customers.Where(c => c.UserId == userId).ToListAsync();
+            if (linkedCustomers.Count > 0)
+                _context.Customers.RemoveRange(linkedCustomers);
+
+            _context.Users.Remove(user);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Deleted account for user {UserId} and {CustomerCount} linked profile(s).",
+                userId, linkedCustomers.Count);
+            return ServiceResponse<bool>.Ok(true, "Your account and all associated data have been deleted.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to delete account for user {UserId}.", userId);
+            return ServiceResponse<bool>.Error("Could not delete your account.");
+        }
+    }
 }

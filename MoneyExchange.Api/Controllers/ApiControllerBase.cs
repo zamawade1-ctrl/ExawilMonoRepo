@@ -1,3 +1,5 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using MoneyExchange.Api.Models.Responses;
 
@@ -22,4 +24,21 @@ public abstract class ApiControllerBase : ControllerBase
             ServiceStatus.Error => StatusCode(StatusCodes.Status500InternalServerError, response),
             _ => StatusCode(StatusCodes.Status500InternalServerError, response)
         };
+
+    /// <summary>
+    /// Extracts the signed-in <c>User</c> id from the JWT, for endpoints scoped to "me".
+    /// Only accepts tokens issued by the Google sign-in flow (<c>subjectType=user</c>) -
+    /// a phone/OTP-issued token's subject is a Customer id, not a User id, and must not be
+    /// treated as one.
+    /// </summary>
+    protected bool TryGetAuthenticatedUserId(out int userId)
+    {
+        userId = 0;
+
+        if (User.FindFirstValue("subjectType") != "user")
+            return false;
+
+        var subject = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+        return int.TryParse(subject, out userId);
+    }
 }

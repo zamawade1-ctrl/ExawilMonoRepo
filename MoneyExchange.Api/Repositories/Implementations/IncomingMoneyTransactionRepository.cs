@@ -17,13 +17,14 @@ public class IncomingMoneyTransactionRepository : IIncomingMoneyTransactionRepos
         _logger = logger;
     }
 
-    public async Task<ServiceResponse<List<IncomingMoneyTransaction>>> GetAllAsync()
+    public async Task<ServiceResponse<List<IncomingMoneyTransaction>>> GetAllForUserAsync(int userId)
     {
         try
         {
             var items = await _context.IncomingMoneyTransactions
                 .AsNoTracking()
                 .Include(t => t.Customer)
+                .Where(t => t.Customer != null && t.Customer.UserId == userId)
                 .OrderByDescending(t => t.CreatedAt)
                 .ToListAsync();
 
@@ -32,12 +33,12 @@ public class IncomingMoneyTransactionRepository : IIncomingMoneyTransactionRepos
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to retrieve incoming money transactions.");
+            _logger.LogError(ex, "Failed to retrieve incoming money transactions for user {UserId}.", userId);
             return ServiceResponse<List<IncomingMoneyTransaction>>.Error("Could not retrieve incoming transactions.");
         }
     }
 
-    public async Task<ServiceResponse<IncomingMoneyTransaction>> GetByIdAsync(int id)
+    public async Task<ServiceResponse<IncomingMoneyTransaction>> GetByIdForUserAsync(int userId, int id)
     {
         try
         {
@@ -47,7 +48,7 @@ public class IncomingMoneyTransactionRepository : IIncomingMoneyTransactionRepos
             var item = await _context.IncomingMoneyTransactions
                 .AsNoTracking()
                 .Include(t => t.Customer)
-                .FirstOrDefaultAsync(t => t.Id == id);
+                .FirstOrDefaultAsync(t => t.Id == id && t.Customer != null && t.Customer.UserId == userId);
 
             return item is null
                 ? ServiceResponse<IncomingMoneyTransaction>.NotFound($"Incoming transaction {id} was not found.")
@@ -55,7 +56,7 @@ public class IncomingMoneyTransactionRepository : IIncomingMoneyTransactionRepos
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to retrieve incoming transaction {Id}.", id);
+            _logger.LogError(ex, "Failed to retrieve incoming transaction {Id} for user {UserId}.", id, userId);
             return ServiceResponse<IncomingMoneyTransaction>.Error("Could not retrieve the incoming transaction.");
         }
     }

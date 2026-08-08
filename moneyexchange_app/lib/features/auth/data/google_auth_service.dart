@@ -21,30 +21,21 @@ class GoogleAuthService {
     _initialized = true;
   }
 
-  /// Triggers the interactive Google sign-in flow and returns the ID token
-  /// to hand to the backend. Throws [GoogleSignInCanceled] if the user
-  /// backs out, or [GoogleSignInException] for any other failure.
-  Future<String> signInAndGetIdToken() async {
+  /// Triggers the interactive Google sign-in flow and returns the signed-in
+  /// account. The account carries both the ID token (for the backend exchange)
+  /// and the profile (email/name/photo, used to build an on-device local session
+  /// when the backend is unreachable). Throws [GoogleSignInCanceled] if the user
+  /// backs out, or [GoogleSignInException] for any other Google-side failure.
+  Future<GoogleSignInAccount> signIn() async {
     await _ensureInitialized();
-
-    final GoogleSignInAccount account;
     try {
-      account = await GoogleSignIn.instance.authenticate();
+      return await GoogleSignIn.instance.authenticate();
     } on GoogleSignInException catch (e) {
       if (e.code == GoogleSignInExceptionCode.canceled) {
         throw GoogleSignInCanceled();
       }
       rethrow;
     }
-
-    final idToken = account.authentication.idToken;
-    if (idToken == null) {
-      throw StateError(
-        'Google sign-in succeeded but returned no ID token. '
-        'Check that GOOGLE_SERVER_CLIENT_ID is set to a Web OAuth client ID.',
-      );
-    }
-    return idToken;
   }
 
   Future<void> signOut() async {

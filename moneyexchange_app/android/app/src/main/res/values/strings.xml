@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ussd_accessibility_description">Lets e-Xawil check your Zaad balance and forward it automatically: it types your PIN, picks the balance menu option, reads the balance, and confirms the transfer on the USSD screens, so it runs hands-free. Active only during a balance-sweep it started.</string>
+</resources>

@@ -23,9 +23,15 @@ public class Customer
     [Required, MaxLength(120)]
     public string FullName { get; set; } = string.Empty;
 
-    /// <summary>Phone number used for OTP login and for matching incoming Zaad/eDahab receipts.</summary>
-    [Required, MaxLength(20)]
-    public string PhoneNumber { get; set; } = string.Empty;
+    /// <summary>
+    /// Phone number used for OTP login and for matching incoming Zaad/eDahab receipts.
+    /// Nullable: the app no longer collects it (the on-device forwarder reads the account's
+    /// own number off the *800# balance screen), so phone-less profiles store null rather than
+    /// an empty string - many empty strings would collide on the unique index, but Postgres
+    /// treats multiple NULLs as distinct.
+    /// </summary>
+    [MaxLength(20)]
+    public string? PhoneNumber { get; set; }
 
     public ForwardingMethod ForwardingMethod { get; set; }
 

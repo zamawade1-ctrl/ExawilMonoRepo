@@ -1,8 +1,33 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- On-device auto-forwarding (Android only). See CLAUDE.md / memory
+         "on-device-forwarding-direction". These let the app react to the
+         incoming Zaad SMS and dial the send-money USSD with the PIN filled in. -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS"/>
+    <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Lets the foreground service launch the USSD call from the background. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- Keeps the CPU (and briefly the screen) awake so a balance sweep completes
+         with the screen off / phone locked at night. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Exact, Doze-piercing 1-minute interval alarms. USE_EXACT_ALARM is
+         auto-granted (this is a sideloaded personal app, not a Play release);
+         SCHEDULE_EXACT_ALARM covers Android 12 where USE_EXACT_ALARM doesn't apply. -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <!-- Restart the poller after a reboot so overnight restarts don't stop forwarding. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+
     <application
-        android:label="moneyexchange_app"
+        android:label="e-Xawil"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"><!-- personal app talks to a plain-http LAN backend -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -12,10 +37,6 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
-            <!-- Specifies an Android theme to apply to this Activity as soon as
-                 the Android process has started. This theme is visible to the user
-                 while the Flutter UI initializes. After that, this theme continues
-                 to determine the Window background behind the Flutter UI. -->
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
@@ -25,17 +46,66 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <!-- Don't delete the meta-data below.
-             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+
+        <!-- Receives the money-in SMS from Zaad (222) even when the app is not
+             running. SMS_RECEIVED is an exempt broadcast, so no foreground
+             service is required just to be woken. -->
+        <receiver
+            android:name=".forwarding.SmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED"/>
+            </intent-filter>
+        </receiver>
+
+        <!-- Keeps the app alive and, crucially, holds background-activity-start
+             privilege so it can launch the USSD call after an SMS arrives. -->
+        <service
+            android:name=".forwarding.ForwardingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="auto_forward_received_money_via_ussd"/>
+        </service>
+
+        <!-- Delivers the periodic exact-alarm tick that drives the fixed-rate,
+             Doze-piercing balance sweep in AUTO_FORWARD mode. -->
+        <receiver
+            android:name=".forwarding.ForwardingTickReceiver"
+            android:exported="false"/>
+
+        <!-- Restarts the auto-forward poller after the device reboots. -->
+        <receiver
+            android:name=".forwarding.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
+
+        <!-- Types the stored PIN into the interactive USSD dialog and taps Send.
+             The user must enable this once in Android Settings > Accessibility. -->
+        <service
+            android:name=".forwarding.UssdAccessibilityService"
+            android:exported="false"
+            android:label="e-Xawil USSD auto-fill"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/ussd_accessibility_config"/>
+        </service>
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
-    <!-- Required to query activities that can process text, see:
-         https://developer.android.com/training/package-visibility and
-         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
 
-         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>

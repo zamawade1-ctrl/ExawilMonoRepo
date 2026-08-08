@@ -4,13 +4,21 @@ import 'package:go_router/go_router.dart';
 
 import '../../features/auth/presentation/auth_providers.dart';
 import '../../features/auth/presentation/sign_in_screen.dart';
-import '../../features/home/presentation/home_screen.dart';
+import '../../features/home/presentation/home_shell.dart';
+import '../../features/info/presentation/about_screen.dart';
+import '../../features/info/presentation/contact_screen.dart';
+import '../../features/info/presentation/privacy_policy_screen.dart';
+import '../../features/settings/presentation/settings_screen.dart';
 
 class AppRoutes {
   const AppRoutes._();
 
   static const signIn = '/sign-in';
   static const home = '/home';
+  static const settings = '/settings';
+  static const about = '/about';
+  static const contact = '/contact';
+  static const privacy = '/privacy';
 }
 
 final appRouterProvider = Provider<GoRouter>((ref) {
@@ -38,7 +46,23 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: AppRoutes.home,
-        builder: (context, state) => const HomeScreen(),
+        builder: (context, state) => const HomeShell(),
+      ),
+      GoRoute(
+        path: AppRoutes.settings,
+        builder: (context, state) => const SettingsScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.about,
+        builder: (context, state) => const AboutScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.contact,
+        builder: (context, state) => const ContactScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.privacy,
+        builder: (context, state) => const PrivacyPolicyScreen(),
       ),
     ],
   );

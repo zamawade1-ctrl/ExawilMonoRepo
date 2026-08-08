@@ -42,4 +42,30 @@ public class CustomersController : ApiControllerBase
         var response = await _repository.RegisterAsync(dto);
         return HandleResponse(response);
     }
+
+    // GET: api/Customers/me
+    // The signed-in (Google) user's own forwarding profile.
+    [Authorize]
+    [HttpGet("me")]
+    public async Task<IActionResult> GetMyProfile()
+    {
+        if (!TryGetAuthenticatedUserId(out var userId))
+            return Forbid();
+
+        var response = await _repository.GetByUserIdAsync(userId);
+        return HandleResponse(response);
+    }
+
+    // PUT: api/Customers/me
+    // Create or update the signed-in user's forwarding profile.
+    [Authorize]
+    [HttpPut("me")]
+    public async Task<IActionResult> UpsertMyProfile([FromBody] RegisterCustomerDto dto)
+    {
+        if (!TryGetAuthenticatedUserId(out var userId))
+            return Forbid();
+
+        var response = await _repository.UpsertForUserAsync(userId, dto);
+        return HandleResponse(response);
+    }
 }

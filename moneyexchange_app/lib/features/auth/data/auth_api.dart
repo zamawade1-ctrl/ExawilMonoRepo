@@ -23,4 +23,10 @@ class AuthApi {
     final data = body['data'] as Map<String, dynamic>;
     return (data['accessToken'] as String, AppUser.fromJson(data));
   }
+
+  /// Permanently deletes the signed-in user's account and all associated data.
+  /// The JWT is attached automatically by [ApiClient]'s interceptor.
+  Future<void> deleteAccount() async {
+    await _dio.delete<Map<String, dynamic>>('/api/auth/me');
+  }
 }

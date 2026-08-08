@@ -17,11 +17,19 @@ class SessionStorage {
 
   final FlutterSecureStorage _storage;
 
+  /// Persists the session. [accessToken] is optional: a local, on-device session
+  /// (created when the backend is unreachable at sign-in) stores just the cached
+  /// profile and no token. Passing a null token clears any previously stored one
+  /// so a stale token can't linger under a token-less session.
   Future<void> save({
-    required String accessToken,
+    String? accessToken,
     required Map<String, dynamic> userProfileJson,
   }) async {
-    await _storage.write(key: _accessTokenKey, value: accessToken);
+    if (accessToken != null) {
+      await _storage.write(key: _accessTokenKey, value: accessToken);
+    } else {
+      await _storage.delete(key: _accessTokenKey);
+    }
     await _storage.write(
       key: _userProfileKey,
       value: jsonEncode(userProfileJson),

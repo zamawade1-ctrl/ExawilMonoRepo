@@ -4,7 +4,10 @@ using MoneyExchange.Api.Repositories.Interfaces;
 
 namespace MoneyExchange.Api.Controllers;
 
-/// <summary>Read-only visibility into the USD receipts the 1-minute auto-forwarding job has processed.</summary>
+/// <summary>
+/// Read-only visibility into the USD receipts the 1-minute auto-forwarding job has processed,
+/// scoped to the signed-in user's own forwarding profile.
+/// </summary>
 [Authorize]
 [Route("api/[controller]")]
 public class IncomingMoneyTransactionsController : ApiControllerBase
@@ -20,7 +23,10 @@ public class IncomingMoneyTransactionsController : ApiControllerBase
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
-        var response = await _repository.GetAllAsync();
+        if (!TryGetAuthenticatedUserId(out var userId))
+            return Forbid();
+
+        var response = await _repository.GetAllForUserAsync(userId);
         return HandleResponse(response);
     }
 
@@ -28,7 +34,10 @@ public class IncomingMoneyTransactionsController : ApiControllerBase
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetById(int id)
     {
-        var response = await _repository.GetByIdAsync(id);
+        if (!TryGetAuthenticatedUserId(out var userId))
+            return Forbid();
+
+        var response = await _repository.GetByIdForUserAsync(userId, id);
         return HandleResponse(response);
     }
 }

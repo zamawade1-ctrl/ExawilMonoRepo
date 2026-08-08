@@ -12,7 +12,15 @@ export '../data/google_auth_service.dart' show GoogleSignInCanceled;
 final sessionStorageProvider = Provider((_) => SessionStorage());
 
 final apiClientProvider = Provider(
-  (ref) => ApiClient(sessionStorage: ref.watch(sessionStorageProvider)),
+  (ref) => ApiClient(
+    sessionStorage: ref.watch(sessionStorageProvider),
+    // On a 401 (expired/invalid token), tear down the session so the router
+    // redirects to sign-in. Deferred to a microtask so we never mutate the
+    // auth provider from inside a request's error callback.
+    onUnauthorized: () => Future.microtask(
+      () => ref.read(authControllerProvider.notifier).handleSessionExpired(),
+    ),
+  ),
 );
 
 final googleAuthServiceProvider = Provider((_) => GoogleAuthService());
@@ -32,8 +40,9 @@ final authRepositoryProvider = Provider(
 /// The app's single source of truth for "who's signed in". `AsyncValue<null>`
 /// means signed out; `AsyncValue<AppUser>` means signed in; loading/error
 /// states drive the sign-in screen's spinner and error banner.
-final authControllerProvider =
-    AsyncNotifierProvider<AuthController, AppUser?>(AuthController.new);
+final authControllerProvider = AsyncNotifierProvider<AuthController, AppUser?>(
+  AuthController.new,
+);
 
 class AuthController extends AsyncNotifier<AppUser?> {
   @override
@@ -58,6 +67,24 @@ class AuthController extends AsyncNotifier<AppUser?> {
 
   Future<void> signOut() async {
     await ref.read(authRepositoryProvider).signOut();
+    state = const AsyncData(null);
+  }
+
+  /// Called when a backend call returns 401: the stored token is expired or
+  /// invalid, so clear just the local session (not the Google account, so
+  /// re-signing in is a single tap) and drop to signed-out. The router then
+  /// redirects to the sign-in screen. Idempotent - concurrent 401s that all
+  /// fire this are harmless once the state is already null.
+  Future<void> handleSessionExpired() async {
+    if (state.value == null) return;
+    await ref.read(sessionStorageProvider).clear();
+    state = const AsyncData(null);
+  }
+
+  /// Permanently deletes the account, then drops to the signed-out state. Throws
+  /// on failure so the caller can surface an error and keep the user signed in.
+  Future<void> deleteAccount() async {
+    await ref.read(authRepositoryProvider).deleteAccount();
     state = const AsyncData(null);
   }
 }

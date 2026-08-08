@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MoneyExchange.Api.Models.DTOs.Auth;
 using MoneyExchange.Api.Repositories.Interfaces;
@@ -38,6 +39,20 @@ public class AuthController : ApiControllerBase
     public async Task<IActionResult> VerifyOtp([FromBody] VerifyOtpDto dto)
     {
         var response = await _authRepository.VerifyOtpAsync(dto);
+        return HandleResponse(response);
+    }
+
+    // DELETE: api/auth/me
+    // Permanently deletes the signed-in user's account and all associated data.
+    // Required by the Google Play / App Store account-deletion policy for publishing.
+    [Authorize]
+    [HttpDelete("me")]
+    public async Task<IActionResult> DeleteMyAccount()
+    {
+        if (!TryGetAuthenticatedUserId(out var userId))
+            return Forbid();
+
+        var response = await _userAuthRepository.DeleteAccountAsync(userId);
         return HandleResponse(response);
     }
 }
