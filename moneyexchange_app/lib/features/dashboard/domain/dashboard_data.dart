@@ -43,6 +43,44 @@ class DestinationTotal {
   final int count;
 }
 
+/// Forwarded total for one delivery method (mobile number or bank account) over
+/// the range, for the side-by-side destination cards.
+class ForwardMethodTotal {
+  const ForwardMethodTotal({required this.total, required this.count});
+
+  final double total;
+  final int count;
+
+  bool get isEmpty => count == 0;
+}
+
+/// Received total for one money provider (Zaad / eDahab) over the range, for the
+/// "where money came from" donut.
+class ProviderTotal {
+  const ProviderTotal({required this.name, required this.total, required this.count});
+
+  final String name;
+  final double total;
+  final int count;
+}
+
+/// Forwarded amount in one part of the day (Night/Morning/Afternoon/Evening),
+/// for the time-of-day activity bars. [label] is the bucket name; [range] is a
+/// short "6a–12p" style hour label.
+class TimeBucket {
+  const TimeBucket({
+    required this.label,
+    required this.range,
+    required this.total,
+    required this.count,
+  });
+
+  final String label;
+  final String range;
+  final double total;
+  final int count;
+}
+
 /// Everything the dashboard renders, computed from the raw on-device ledger.
 class DashboardData {
   const DashboardData({
@@ -51,10 +89,16 @@ class DashboardData {
     required this.label,
     required this.daily,
     required this.destinations,
+    required this.mobileForward,
+    required this.bankForward,
+    required this.providers,
+    required this.timeOfDay,
     required this.rangeReceived,
     required this.rangeForwarded,
     required this.forwardedCount,
     required this.failedCount,
+    required this.largestForward,
+    required this.busiestDay,
     required this.todayForwarded,
     required this.weekly,
     required this.weeklyForwarded,
@@ -66,19 +110,51 @@ class DashboardData {
   final String label;
   final List<DailyPoint> daily;
   final List<DestinationTotal> destinations;
+
+  /// Forwards delivered to a mobile number (`*806#`) over the range.
+  final ForwardMethodTotal mobileForward;
+
+  /// Forwards deposited to a bank account (`*800#`) over the range.
+  final ForwardMethodTotal bankForward;
+
+  /// Received totals split by money provider (Zaad / eDahab), largest first.
+  final List<ProviderTotal> providers;
+
+  /// Forwarded amount bucketed into the four parts of the day.
+  final List<TimeBucket> timeOfDay;
   final double rangeReceived;
   final double rangeForwarded;
   final int forwardedCount;
   final int failedCount;
+
+  /// The single largest successful forward in the range (0 if none).
+  final double largestForward;
+
+  /// The day in the range with the most forwarded money (null if none).
+  final DateTime? busiestDay;
   final double todayForwarded;
   final List<DailyPoint> weekly;
   final double weeklyForwarded;
   final double weeklyReceived;
 
   bool get isEmpty => rangeReceived == 0 && rangeForwarded == 0 && daily.every((d) => d.max == 0);
+
+  /// Fraction of forward attempts that succeeded (1.0 when none were attempted).
+  double get successRate {
+    final attempts = forwardedCount + failedCount;
+    return attempts == 0 ? 1 : forwardedCount / attempts;
+  }
+
+  /// Average value of a successful forward in the range (0 if none).
+  double get averageForward =>
+      forwardedCount == 0 ? 0 : rangeForwarded / forwardedCount;
 }
 
 DateTime _startOfDay(DateTime d) => DateTime(d.year, d.month, d.day);
+
+/// Maps an hour-of-day (0–23) to a part-of-day bucket:
+/// 0 Night (0–5), 1 Morning (6–11), 2 Afternoon (12–17), 3 Evening (18–23).
+int _timeBucketIndex(int hour) => (hour ~/ 6).clamp(0, 3);
 
 /// A forward counts toward money totals when it wasn't an outright failure
 /// (legacy events with no status are treated as successful).
@@ -130,6 +206,16 @@ DashboardData computeDashboard(
   var rangeForwarded = 0.0;
   var forwardedCount = 0;
   var failedCount = 0;
+  var mobileTotal = 0.0;
+  var mobileCount = 0;
+  var bankTotal = 0.0;
+  var bankCount = 0;
+  var largestForward = 0.0;
+  final providerTotals = <String, double>{};
+  final providerCounts = <String, int>{};
+  // Forwarded money bucketed into the four parts of the day (indexes 0..3).
+  final tod = <double>[0, 0, 0, 0];
+  final todCounts = <int>[0, 0, 0, 0];
 
   for (final t in txns) {
     final local = t.timestamp.toLocal();
@@ -138,6 +224,9 @@ DashboardData computeDashboard(
     if (t.isReceived) {
       received[key] = (received[key] ?? 0) + t.amountUsd;
       rangeReceived += t.amountUsd;
+      final p = (t.provider == null || t.provider!.isEmpty) ? 'Other' : t.provider!;
+      providerTotals[p] = (providerTotals[p] ?? 0) + t.amountUsd;
+      providerCounts[p] = (providerCounts[p] ?? 0) + 1;
     } else if (t.isForwarded) {
       if (t.status == DeviceTxStatus.failed) {
         failedCount++;
@@ -146,6 +235,17 @@ DashboardData computeDashboard(
       forwarded[key] = (forwarded[key] ?? 0) + t.amountUsd;
       rangeForwarded += t.amountUsd;
       forwardedCount++;
+      if (t.amountUsd > largestForward) largestForward = t.amountUsd;
+      final bucket = _timeBucketIndex(local.hour);
+      tod[bucket] += t.amountUsd;
+      todCounts[bucket]++;
+      if (t.isBankMethod) {
+        bankTotal += t.amountUsd;
+        bankCount++;
+      } else {
+        mobileTotal += t.amountUsd;
+        mobileCount++;
+      }
       final d = t.destinationLabel;
       destTotals[d] = (destTotals[d] ?? 0) + t.amountUsd;
       destCounts[d] = (destCounts[d] ?? 0) + 1;
@@ -173,6 +273,33 @@ DashboardData computeDashboard(
             ),
           ).toList()
         ..sort((a, b) => b.total.compareTo(a.total)));
+
+  final providers =
+      (providerTotals.entries.map(
+            (e) => ProviderTotal(
+              name: e.key,
+              total: e.value,
+              count: providerCounts[e.key] ?? 0,
+            ),
+          ).toList()
+        ..sort((a, b) => b.total.compareTo(a.total)));
+
+  final timeOfDay = <TimeBucket>[
+    TimeBucket(label: 'Night', range: '12–6a', total: tod[0], count: todCounts[0]),
+    TimeBucket(label: 'Morning', range: '6a–12p', total: tod[1], count: todCounts[1]),
+    TimeBucket(label: 'Afternoon', range: '12–6p', total: tod[2], count: todCounts[2]),
+    TimeBucket(label: 'Evening', range: '6p–12a', total: tod[3], count: todCounts[3]),
+  ];
+
+  // The day in the range that forwarded the most (null when nothing forwarded).
+  DateTime? busiestDay;
+  var busiestTotal = 0.0;
+  forwarded.forEach((day, total) {
+    if (total > busiestTotal) {
+      busiestTotal = total;
+      busiestDay = day;
+    }
+  });
 
   // Weekly summary — always the last 7 days, independent of the selection.
   final weekStart = today.subtract(const Duration(days: 6));
@@ -215,10 +342,16 @@ DashboardData computeDashboard(
     label: label,
     daily: daily,
     destinations: destinations,
+    mobileForward: ForwardMethodTotal(total: mobileTotal, count: mobileCount),
+    bankForward: ForwardMethodTotal(total: bankTotal, count: bankCount),
+    providers: providers,
+    timeOfDay: timeOfDay,
     rangeReceived: rangeReceived,
     rangeForwarded: rangeForwarded,
     forwardedCount: forwardedCount,
     failedCount: failedCount,
+    largestForward: largestForward,
+    busiestDay: busiestDay,
     todayForwarded: todayForwarded,
     weekly: weekly,
     weeklyForwarded: weeklyForwarded,

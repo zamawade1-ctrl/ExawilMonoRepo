@@ -167,6 +167,126 @@ class _Legend extends StatelessWidget {
   );
 }
 
+/// The two delivery methods side by side: how much was forwarded to a mobile
+/// number vs deposited to a bank account over the range. Both cards always show
+/// (a method with no forwards reads $0.00 · 0×) so the split is always visible.
+class ForwardDestinationSplit extends StatelessWidget {
+  const ForwardDestinationSplit({
+    super.key,
+    required this.mobile,
+    required this.bank,
+  });
+
+  final ForwardMethodTotal mobile;
+  final ForwardMethodTotal bank;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // IntrinsicHeight so the two cards match heights without CrossAxisAlignment
+    // .stretch (which would demand an infinite height inside the scrolling list).
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _MethodCard(
+              label: 'Mobile number',
+              icon: Icons.smartphone,
+              color: _forwardedColor(context),
+              total: mobile,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _MethodCard(
+              label: 'Bank account',
+              icon: Icons.account_balance,
+              color: theme.colorScheme.secondary,
+              total: bank,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MethodCard extends StatelessWidget {
+  const _MethodCard({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.total,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color color;
+  final ForwardMethodTotal total;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final active = !total.isEmpty;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: active ? 0.12 : 0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: active ? 0.4 : 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, size: 18, color: color),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              _money.format(total.total),
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: active ? color : theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            total.count == 1 ? '1 forward' : '${total.count} forwards',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Horizontal proportion bars: how much was forwarded to each destination over
 /// the range, largest first. Clearer than a pie for a handful of destinations.
 class DestinationsBreakdown extends StatelessWidget {
@@ -388,6 +508,379 @@ class _WeekStat extends StatelessWidget {
         Text(
           label,
           style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Where the money came from: a donut of received totals by provider (Zaad /
+/// eDahab), with the range's received total in the middle and a legend beside it.
+class ProviderBreakdown extends StatelessWidget {
+  const ProviderBreakdown({super.key, required this.providers, required this.total});
+
+  final List<ProviderTotal> providers;
+  final double total;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final palette = _providerPalette(theme);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 130,
+            height: 130,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                PieChart(
+                  PieChartData(
+                    sectionsSpace: 2,
+                    centerSpaceRadius: 40,
+                    startDegreeOffset: -90,
+                    sections: [
+                      for (var i = 0; i < providers.length; i++)
+                        PieChartSectionData(
+                          value: providers[i].total,
+                          color: palette[i % palette.length],
+                          radius: 22,
+                          showTitle: false,
+                        ),
+                    ],
+                  ),
+                ),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _compact.format(total),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      'received',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < providers.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: _ProviderLegendRow(
+                      provider: providers[i],
+                      color: palette[i % palette.length],
+                      fraction: total <= 0 ? 0 : providers[i].total / total,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Color> _providerPalette(ThemeData theme) => [
+    theme.colorScheme.primary,
+    theme.colorScheme.tertiary,
+    theme.colorScheme.secondary,
+    theme.colorScheme.error,
+  ];
+}
+
+class _ProviderLegendRow extends StatelessWidget {
+  const _ProviderLegendRow({
+    required this.provider,
+    required this.color,
+    required this.fraction,
+  });
+
+  final ProviderTotal provider;
+  final Color color;
+  final double fraction;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(3)),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            provider.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          '${_money.format(provider.total)}  ·  ${(fraction * 100).round()}%',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Forwarding reliability: the share of forward attempts that were delivered vs
+/// failed, shown as a headline success rate over a single stacked bar. For a
+/// forwarding product this is the trust metric — did the money actually arrive.
+class ReliabilityCard extends StatelessWidget {
+  const ReliabilityCard({
+    super.key,
+    required this.successRate,
+    required this.delivered,
+    required this.failed,
+  });
+
+  final double successRate;
+  final int delivered;
+  final int failed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final attempts = delivered + failed;
+    final ok = _forwardedColor(context);
+    final bad = theme.colorScheme.error;
+    final pct = (successRate * 100);
+    // Whole number unless a fraction would otherwise round away a real failure.
+    final pctLabel = pct == pct.roundToDouble()
+        ? '${pct.round()}%'
+        : '${pct.toStringAsFixed(1)}%';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                pctLabel,
+                style: theme.textTheme.displaySmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: failed == 0 ? ok : theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'delivered',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: SizedBox(
+              height: 12,
+              child: attempts == 0
+                  ? ColoredBox(
+                      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+                    )
+                  : Row(
+                      children: [
+                        if (delivered > 0)
+                          Expanded(flex: delivered, child: ColoredBox(color: ok)),
+                        if (failed > 0)
+                          Expanded(flex: failed, child: ColoredBox(color: bad)),
+                      ],
+                    ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _ReliabilityLegend(color: ok, label: 'Delivered', count: delivered),
+              const SizedBox(width: 20),
+              _ReliabilityLegend(
+                color: bad,
+                label: 'Failed',
+                count: failed,
+                muted: failed == 0,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReliabilityLegend extends StatelessWidget {
+  const _ReliabilityLegend({
+    required this.color,
+    required this.label,
+    required this.count,
+    this.muted = false,
+  });
+
+  final Color color;
+  final String label;
+  final int count;
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: muted ? color.withValues(alpha: 0.35) : color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          '$count $label',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// When money actually moves: forwarded totals bucketed into the four parts of
+/// the day, so the user can see whether activity peaks in the morning, evening,
+/// etc. A compact four-column bar chart.
+class TimeOfDayChart extends StatelessWidget {
+  const TimeOfDayChart({super.key, required this.buckets});
+
+  final List<TimeBucket> buckets;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final maxVal = buckets.fold<double>(0, (m, b) => b.total > m ? b.total : m);
+    final peak = maxVal <= 0 ? -1 : buckets.indexWhere((b) => b.total == maxVal);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 16, 12, 12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: SizedBox(
+        height: 150,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            for (var i = 0; i < buckets.length; i++)
+              Expanded(
+                child: _TimeBar(
+                  bucket: buckets[i],
+                  fraction: maxVal <= 0 ? 0 : buckets[i].total / maxVal,
+                  highlight: i == peak,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TimeBar extends StatelessWidget {
+  const _TimeBar({required this.bucket, required this.fraction, required this.highlight});
+
+  final TimeBucket bucket;
+  final double fraction;
+  final bool highlight;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = highlight
+        ? _forwardedColor(context)
+        : _forwardedColor(context).withValues(alpha: 0.35);
+
+    return Column(
+      children: [
+        Text(
+          bucket.total > 0 ? _compact.format(bucket.total) : '',
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Give an empty bucket a hairline so the axis reads as continuous.
+              final h = (constraints.maxHeight * fraction).clamp(3.0, constraints.maxHeight);
+              return Align(
+                alignment: Alignment.bottomCenter,
+                child: Container(
+                  width: 26,
+                  height: h,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          bucket.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: highlight ? FontWeight.w700 : FontWeight.w400,
+          ),
+        ),
+        Text(
+          bucket.range,
+          style: theme.textTheme.labelSmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
         ),

@@ -45,6 +45,10 @@ class DashboardScreen extends ConsumerWidget {
             const _EmptyChart()
           else
             ReceivedForwardedChart(points: data.daily),
+          if (data.forwardedCount > 0) ...[
+            const SizedBox(height: 16),
+            _InsightsStrip(data: data),
+          ],
           const SizedBox(height: 24),
           _SectionTitle(
             'Forwarded destinations',
@@ -53,8 +57,39 @@ class DashboardScreen extends ConsumerWidget {
           const SizedBox(height: 12),
           if (data.destinations.isEmpty)
             const _EmptyChart(message: 'No forwards in this range yet.')
-          else
+          else ...[
+            ForwardDestinationSplit(
+              mobile: data.mobileForward,
+              bank: data.bankForward,
+            ),
+            const SizedBox(height: 16),
             DestinationsBreakdown(destinations: data.destinations),
+          ],
+          if (data.providers.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            _SectionTitle('Where money came from', subtitle: data.label),
+            const SizedBox(height: 12),
+            ProviderBreakdown(
+              providers: data.providers,
+              total: data.rangeReceived,
+            ),
+          ],
+          if (data.forwardedCount + data.failedCount > 0) ...[
+            const SizedBox(height: 24),
+            _SectionTitle('Forwarding reliability', subtitle: data.label),
+            const SizedBox(height: 12),
+            ReliabilityCard(
+              successRate: data.successRate,
+              delivered: data.forwardedCount,
+              failed: data.failedCount,
+            ),
+          ],
+          if (data.forwardedCount > 0) ...[
+            const SizedBox(height: 24),
+            _SectionTitle('When money moves', subtitle: data.label),
+            const SizedBox(height: 12),
+            TimeOfDayChart(buckets: data.timeOfDay),
+          ],
           const SizedBox(height: 24),
           _SectionTitle('This week', subtitle: 'Last 7 days'),
           const SizedBox(height: 12),
@@ -266,6 +301,56 @@ class _StatTile extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// A compact three-tile strip of derived forwarding stats: the average forward
+/// size, the single largest forward, and the busiest day — quick context the
+/// totals alone don't convey.
+class _InsightsStrip extends StatelessWidget {
+  const _InsightsStrip({required this.data});
+
+  final DashboardData data;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final busiest = data.busiestDay;
+    // For a single-day range "busiest day" is trivially that day, so show the
+    // count of forwards instead; otherwise show the weekday that moved the most.
+    final singleDay = data.end.difference(data.start).inDays <= 1;
+    return Row(
+      children: [
+        Expanded(
+          child: _StatTile(
+            label: 'Avg forward',
+            value: _money.format(data.averageForward),
+            icon: Icons.calculate_outlined,
+            color: theme.colorScheme.secondary,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _StatTile(
+            label: 'Largest',
+            value: _money.format(data.largestForward),
+            icon: Icons.trending_up,
+            color: theme.colorScheme.tertiary,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _StatTile(
+            label: singleDay ? 'Forwards' : 'Busiest day',
+            value: singleDay
+                ? '${data.forwardedCount}'
+                : (busiest != null ? DateFormat.E().format(busiest) : '—'),
+            icon: singleDay ? Icons.swap_horiz : Icons.event_available_outlined,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+      ],
     );
   }
 }

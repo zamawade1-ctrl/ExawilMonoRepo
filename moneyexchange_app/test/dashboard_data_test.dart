@@ -93,6 +93,95 @@ void main() {
     expect(data.destinations.last.destination, '634480003');
   });
 
+  test('splits forwarded totals by mobile vs bank method', () {
+    final txns = [
+      fwd(10, DateTime(2026, 8, 9, 9), destination: '634480003'), // mobile
+      fwd(15, DateTime(2026, 8, 9, 10), destination: '065112233'), // mobile
+      fwd(40, DateTime(2026, 8, 9, 11), method: 1), // bank
+      fwd(20, DateTime(2026, 8, 9, 12), method: 1, status: DeviceTxStatus.failed), // bank, failed
+    ];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.mobileForward.total, 25);
+    expect(data.mobileForward.count, 2);
+    expect(data.bankForward.total, 40); // failed bank forward excluded
+    expect(data.bankForward.count, 1);
+  });
+
+  test('bank-only range leaves the mobile split empty', () {
+    final txns = [fwd(30, DateTime(2026, 8, 9, 9), method: 1)];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.bankForward.count, 1);
+    expect(data.mobileForward.isEmpty, isTrue);
+    expect(data.mobileForward.total, 0);
+  });
+
+  test('received totals split by provider, largest first', () {
+    final txns = [
+      rx(30, DateTime(2026, 8, 9, 9), provider: 'Zaad'),
+      rx(20, DateTime(2026, 8, 9, 10), provider: 'Zaad'),
+      rx(80, DateTime(2026, 8, 9, 11), provider: 'eDahab'),
+      rx(5, DateTime(2026, 8, 9, 12), provider: null), // -> 'Other'
+    ];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.providers.map((p) => p.name).toList(), ['eDahab', 'Zaad', 'Other']);
+    expect(data.providers.first.total, 80);
+    expect(data.providers[1].total, 50); // Zaad aggregated
+    expect(data.providers[1].count, 2);
+  });
+
+  test('success rate and reliability counts exclude/include failures', () {
+    final txns = [
+      fwd(10, DateTime(2026, 8, 9, 9)),
+      fwd(10, DateTime(2026, 8, 9, 10)),
+      fwd(10, DateTime(2026, 8, 9, 11)),
+      fwd(10, DateTime(2026, 8, 9, 12), status: DeviceTxStatus.failed),
+    ];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.forwardedCount, 3);
+    expect(data.failedCount, 1);
+    expect(data.successRate, closeTo(0.75, 1e-9));
+  });
+
+  test('successRate is 1.0 when nothing was attempted', () {
+    final data = computeDashboard(const [], const DashboardSelection(DashboardMode.today), now);
+    expect(data.successRate, 1.0);
+  });
+
+  test('largest forward and average forward reflect successful forwards only', () {
+    final txns = [
+      fwd(10, DateTime(2026, 8, 9, 9)),
+      fwd(40, DateTime(2026, 8, 9, 10)),
+      fwd(100, DateTime(2026, 8, 9, 11), status: DeviceTxStatus.failed), // ignored
+    ];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.largestForward, 40);
+    expect(data.averageForward, 25); // (10 + 40) / 2
+  });
+
+  test('forwards bucket into parts of the day', () {
+    final txns = [
+      fwd(5, DateTime(2026, 8, 9, 3)), // Night
+      fwd(10, DateTime(2026, 8, 9, 8)), // Morning
+      fwd(20, DateTime(2026, 8, 9, 15)), // Afternoon
+      fwd(40, DateTime(2026, 8, 9, 20)), // Evening
+      fwd(15, DateTime(2026, 8, 9, 21)), // Evening
+    ];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.timeOfDay.map((b) => b.label).toList(),
+        ['Night', 'Morning', 'Afternoon', 'Evening']);
+    expect(data.timeOfDay[0].total, 5);
+    expect(data.timeOfDay[1].total, 10);
+    expect(data.timeOfDay[2].total, 20);
+    expect(data.timeOfDay[3].total, 55); // two evening forwards
+    expect(data.timeOfDay[3].count, 2);
+  });
+
   test('picked day selection isolates that calendar day', () {
     final txns = [
       fwd(9, DateTime(2026, 8, 3, 14)),

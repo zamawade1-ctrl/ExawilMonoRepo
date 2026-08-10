@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/device_ledger_channel.dart';
 import '../domain/dashboard_data.dart';
 import '../domain/device_transaction.dart';
+import '../domain/sample_ledger.dart';
 
 final deviceLedgerChannelProvider = Provider(
   (ref) => const DeviceLedgerChannel(),
@@ -40,6 +41,11 @@ class DeviceLedgerController extends AsyncNotifier<List<DeviceTransaction>> {
   }
 
   Future<List<DeviceTransaction>> _load(DeviceLedgerChannel channel) async {
+    // Demo/preview only (--dart-define=SEED_SAMPLE_LEDGER=true): stand in for the
+    // native ledger so the dashboard can be exercised without a forwarding device.
+    if (kSeedSampleLedger) {
+      return sampleLedger()..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    }
     final all = await channel.getTransactions();
     all.sort((a, b) => b.timestamp.compareTo(a.timestamp)); // newest first
     return all;
