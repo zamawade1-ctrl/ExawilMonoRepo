@@ -17,8 +17,28 @@ public class AuthController : ApiControllerBase
         _userAuthRepository = userAuthRepository;
     }
 
+    // POST: api/auth/register
+    // The app's sign-up form: full name, email, username, password. Creates the User identity +
+    // its linked Customer forwarding profile and returns a signed-in JWT (no OTP for now).
+    [HttpPost("register")]
+    public async Task<IActionResult> Register([FromBody] RegisterAccountDto dto)
+    {
+        var response = await _userAuthRepository.RegisterAsync(dto);
+        return HandleResponse(response);
+    }
+
+    // POST: api/auth/login
+    // The app's sign-in form: username-or-email + password. Returns a JWT on success.
+    [HttpPost("login")]
+    public async Task<IActionResult> Login([FromBody] LoginDto dto)
+    {
+        var response = await _userAuthRepository.LoginAsync(dto);
+        return HandleResponse(response);
+    }
+
     // POST: api/auth/google
-    // The Flutter app's first-page sign-in: exchanges a Google ID token for our own JWT.
+    // Legacy Google sign-in, kept dormant since the switch to phone/password auth. Not used by
+    // the app any more; left in place so existing tokens / the verifier still compile.
     [HttpPost("google")]
     public async Task<IActionResult> SignInWithGoogle([FromBody] GoogleSignInDto dto)
     {
@@ -43,7 +63,7 @@ public class AuthController : ApiControllerBase
     }
 
     // DELETE: api/auth/me
-    // Permanently deletes the signed-in user's account and all associated data.
+    // Permanently deletes the signed-in customer's account and all associated data.
     // Required by the Google Play / App Store account-deletion policy for publishing.
     [Authorize]
     [HttpDelete("me")]

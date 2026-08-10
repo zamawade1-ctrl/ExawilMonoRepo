@@ -128,6 +128,22 @@ object UssdSession {
     }
 
     /**
+     * Called by the a11y service when the post-PIN screen shows the balance
+     * DIRECTLY, with no numbered menu to pick from (varies by account/provider).
+     * Advances [Step.MENU] → [Step.BALANCE_RESULT] so [onBalanceRead] — which is
+     * guarded on BALANCE_RESULT — actually captures the balance. Without this, a
+     * directly-shown balance was parsed but never stored, so the cycle timed out
+     * and a ≥ $1 balance silently failed to forward.
+     */
+    @Synchronized
+    fun onMenuBypassedToBalance() {
+        if (step == Step.MENU) {
+            step = Step.BALANCE_RESULT
+            arm()
+        }
+    }
+
+    /**
      * Called by the a11y service once it has read the balance screen. Moves to
      * [Step.BALANCE_CLOSING] — NOT straight to captured — so the leftover balance
      * dialog is retried closed before the poller dials `*806#`; a lingering
@@ -158,10 +174,10 @@ object UssdSession {
 
     /**
      * Starts a cycle that goes STRAIGHT to the send step, skipping the `*800#`
-     * balance check — used by the check-messages (898) flow, where the amount to
-     * forward was already read from the incoming SMS. Sets the PINs + destination
-     * and jumps to [Step.SEND_PIN] so the accessibility service auto-fills the
-     * primary PIN on the `*806#` confirmation popup exactly as it does mid-sweep.
+     * balance check — used by the check-messages flow, where the amount to forward
+     * was read straight from the 898 exchange SMS. Sets the PINs + destination and
+     * jumps to [Step.SEND_PIN] so the accessibility service auto-fills the primary
+     * PIN on the `*806#` confirmation popup exactly as it does mid-sweep.
      */
     @Synchronized
     fun beginDirectSend(primary: String, secondary: String, dest: String) {

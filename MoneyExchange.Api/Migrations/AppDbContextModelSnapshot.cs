@@ -234,16 +234,23 @@ namespace MoneyExchange.Api.Migrations
                         .HasColumnType("character varying(120)");
 
                     b.Property<string>("GoogleSubjectId")
-                        .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
                     b.Property<DateTime>("LastLoginAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("PasswordHash")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)");
+
                     b.Property<string>("ProfilePictureUrl")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Username")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
 
                     b.HasKey("Id");
 
@@ -253,15 +260,18 @@ namespace MoneyExchange.Api.Migrations
                     b.HasIndex("GoogleSubjectId")
                         .IsUnique();
 
+                    b.HasIndex("Username")
+                        .IsUnique();
+
                     b.ToTable("Users");
                 });
 
             modelBuilder.Entity("MoneyExchange.Api.Models.Entities.Customer", b =>
                 {
                     b.HasOne("MoneyExchange.Api.Models.Entities.User", "User")
-                        .WithOne()
+                        .WithOne("Customer")
                         .HasForeignKey("MoneyExchange.Api.Models.Entities.Customer", "UserId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .OnDelete(DeleteBehavior.Cascade);
 
                     b.Navigation("User");
                 });
@@ -273,6 +283,11 @@ namespace MoneyExchange.Api.Migrations
                         .HasForeignKey("CustomerId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("MoneyExchange.Api.Models.Entities.User", b =>
+                {
                     b.Navigation("Customer");
                 });
 #pragma warning restore 612, 618

@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -28,10 +29,13 @@ void main() {
     });
   });
 
-  testWidgets('shows the Google sign-in screen when signed out', (tester) async {
+  testWidgets('shows the sign-in / sign-up form when signed out', (tester) async {
     await tester.pumpWidget(const ProviderScope(child: MoneyExchangeApp()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sign in with Google'), findsOneWidget);
+    // The mode toggle and the primary action button are both present.
+    expect(find.text('Sign in'), findsWidgets);
+    expect(find.text('Sign up'), findsWidgets);
+    expect(find.byType(TextFormField), findsWidgets);
   });
 }

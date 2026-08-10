@@ -1,100 +1,110 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
-import 'package:google_sign_in/google_sign_in.dart';
+import 'package:dio/dio.dart';
 
 import '../../../core/storage/session_storage.dart';
 import '../domain/app_user.dart';
 import 'auth_api.dart';
-import 'google_auth_service.dart';
 
-/// Orchestrates a full sign-in: Google account picker -> ID token -> backend
-/// exchange -> persisted session. This is the one place that knows all three
-/// pieces (Google, the backend, secure storage) have to happen together.
+/// A sign-in / sign-up failure with a message safe to show the user. Carries the
+/// backend's `ServiceResponse.message` when there was one (e.g. "This username is
+/// already taken.", "Incorrect username/email or password."), or a network
+/// message when the backend couldn't be reached.
+class AuthException implements Exception {
+  const AuthException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// Orchestrates username/password auth (the flow that replaced Google Sign-In):
+/// call the backend, then persist the returned JWT + profile so the session
+/// survives a cold start. Unlike the old Google flow, the first sign-in/sign-up
+/// genuinely needs the backend (a password can only be verified server-side), so
+/// there's no offline fallback here — but a *returning* user is restored from the
+/// cached profile without any network call (see [restoreSession]).
 class AuthRepository {
   AuthRepository({
-    required GoogleAuthService googleAuthService,
     required AuthApi authApi,
     required SessionStorage sessionStorage,
-  }) : _googleAuthService = googleAuthService,
-       _authApi = authApi,
+  }) : _authApi = authApi,
        _sessionStorage = sessionStorage;
 
-  final GoogleAuthService _googleAuthService;
   final AuthApi _authApi;
   final SessionStorage _sessionStorage;
 
-  /// Signs in with Google, then tries to exchange the Google token for a backend
-  /// session. The backend only provides a server identity; the app's forwarding
-  /// runs entirely on-device, so a backend that's down or unreachable must NOT
-  /// block sign-in. When the exchange can't complete, we fall back to a **local
-  /// session** built from the Google account — the user gets straight into the
-  /// app and everything on-device keeps working.
-  ///
-  /// The only way this throws is a genuine Google-side failure (the user backs
-  /// out → [GoogleSignInCanceled], or a [GoogleSignInException] for a config /
-  /// no-account problem) — those are surfaced to the UI with a specific message.
-  Future<AppUser> signInWithGoogle() async {
-    // Google errors propagate (canceled / real failure) — handled by the caller.
-    final account = await _googleAuthService.signIn();
-    final idToken = account.authentication.idToken;
-
-    if (idToken != null) {
-      try {
-        final (accessToken, user) = await _authApi.signInWithGoogle(idToken);
-        await _sessionStorage.save(
-          accessToken: accessToken,
-          userProfileJson: user.toJson(),
-        );
-        return user;
-      } catch (error) {
-        // Backend unreachable / erroring — not a sign-in failure for an on-device
-        // app. Fall through to a local session so the user still gets in.
-        debugPrint(
-          'Backend sign-in exchange failed ($error); '
-          'continuing with an on-device local session.',
-        );
-      }
-    } else {
-      debugPrint(
-        'Google returned no ID token (check GOOGLE_SERVER_CLIENT_ID is a Web '
-        'OAuth client ID); continuing with an on-device local session.',
-      );
-    }
-
-    final localUser = _localUserFromGoogle(account);
-    // Local session: profile only, no backend token.
-    await _sessionStorage.save(userProfileJson: localUser.toJson());
-    return localUser;
-  }
-
-  /// Builds an [AppUser] from the Google account for a local (backend-less)
-  /// session. Uses id 0 as a sentinel — there's no backend user id — and the
-  /// Google display name (falling back to the email) as the full name.
-  AppUser _localUserFromGoogle(GoogleSignInAccount account) {
-    final name = account.displayName?.trim();
-    return AppUser(
-      id: 0,
-      email: account.email,
-      fullName: (name != null && name.isNotEmpty) ? name : account.email,
-      profilePictureUrl: account.photoUrl,
+  /// Creates an account, then persists the session. Throws [AuthException] with a
+  /// user-facing message on any failure.
+  Future<AppUser> register({
+    required String fullName,
+    required String email,
+    required String username,
+    required String password,
+  }) async {
+    return _run(
+      () => _authApi.register(
+        fullName: fullName,
+        email: email,
+        username: username,
+        password: password,
+      ),
     );
   }
 
+  /// Signs in, then persists the session. Throws [AuthException] with a
+  /// user-facing message on any failure.
+  Future<AppUser> login({
+    required String usernameOrEmail,
+    required String password,
+  }) async {
+    return _run(
+      () => _authApi.login(usernameOrEmail: usernameOrEmail, password: password),
+    );
+  }
+
+  /// Runs an auth call and, on success, saves the token + profile. Maps
+  /// transport/backend errors to a friendly [AuthException].
+  Future<AppUser> _run(
+    Future<(String, AppUser)> Function() call,
+  ) async {
+    try {
+      final (accessToken, user) = await call();
+      await _sessionStorage.save(
+        accessToken: accessToken,
+        userProfileJson: user.toJson(),
+      );
+      return user;
+    } on DioException catch (e) {
+      throw AuthException(_messageFor(e));
+    }
+  }
+
+  /// Extracts the backend's `ServiceResponse.message` from an error response, or
+  /// falls back to a network/generic message when there's no usable body.
+  String _messageFor(DioException e) {
+    final data = e.response?.data;
+    if (data is Map && data['message'] is String &&
+        (data['message'] as String).isNotEmpty) {
+      return data['message'] as String;
+    }
+    if (e.response != null) {
+      return 'Something went wrong. Please try again.';
+    }
+    return 'Could not reach the server. Check your connection and try again.';
+  }
+
   /// Restores the cached profile from a previous sign-in. The cached profile is
-  /// the source of "who's signed in"; the backend token is optional (a local
-  /// on-device session has none). An expired backend token is simply dropped —
-  /// NOT treated as a sign-out — so the user isn't surprise-kicked back to the
-  /// sign-in screen just because a server token lapsed; forwarding is on-device
-  /// and doesn't need it. A live 401 mid-session is still handled by the
-  /// interceptor when a token is actually attached.
+  /// the source of "who's signed in"; the backend token is optional here. An
+  /// expired token is dropped (not treated as a sign-out) so a returning user
+  /// isn't surprise-kicked to sign-in just because a server token lapsed — the
+  /// on-device forwarding keeps working without it. A live 401 mid-session is
+  /// still handled by the interceptor when a token is actually attached.
   Future<AppUser?> restoreSession() async {
     final profile = await _sessionStorage.readUserProfile();
     if (profile == null) return null;
 
     final token = await _sessionStorage.readAccessToken();
     if (token != null && _isJwtExpired(token)) {
-      // Drop the dead token but keep the user in via a local session.
       await _sessionStorage.save(userProfileJson: profile);
     }
 
@@ -137,7 +147,6 @@ class AuthRepository {
   }
 
   Future<void> signOut() async {
-    await _googleAuthService.signOut();
     await _sessionStorage.clear();
   }
 
@@ -145,7 +154,6 @@ class AuthRepository {
   /// like a sign-out so the app returns to the signed-out state.
   Future<void> deleteAccount() async {
     await _authApi.deleteAccount();
-    await _googleAuthService.signOut();
     await _sessionStorage.clear();
   }
 }

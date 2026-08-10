@@ -58,7 +58,7 @@ class AboutScreen extends StatelessWidget {
           const _AboutStep(
             icon: Icons.sync,
             title: 'We auto-forward',
-            body: 'When money lands on your Zaad or eDahab number, it is forwarded automatically '
+            body: 'When money lands on your Zaad or eDahab number, it is forwarded automatically or waits and checks the received money if you choosed the check messaage forwarding mode and then forwards '
                 'to your chosen destination.',
           ),
           const SizedBox(height: 28),

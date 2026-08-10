@@ -12,7 +12,7 @@ public interface ICustomerRepository
 
     Task<ServiceResponse<Customer>> RegisterAsync(RegisterCustomerDto dto);
 
-    /// <summary>The signed-in user's own forwarding profile, if they've set one up.</summary>
+    /// <summary>The signed-in user's own forwarding profile (linked 1-to-1 to their User identity).</summary>
     Task<ServiceResponse<Customer>> GetByUserIdAsync(int userId);
 
     /// <summary>Creates or updates the signed-in user's forwarding profile.</summary>

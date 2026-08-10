@@ -1,13 +1,16 @@
+import 'dart:io';
+
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/api_client.dart';
 import '../../../core/storage/session_storage.dart';
+import '../../forwarding/data/forwarding_channel.dart';
 import '../data/auth_api.dart';
 import '../data/auth_repository.dart';
-import '../data/google_auth_service.dart';
 import '../domain/app_user.dart';
 
-export '../data/google_auth_service.dart' show GoogleSignInCanceled;
+export '../data/auth_repository.dart' show AuthException;
 
 final sessionStorageProvider = Provider((_) => SessionStorage());
 
@@ -23,15 +26,12 @@ final apiClientProvider = Provider(
   ),
 );
 
-final googleAuthServiceProvider = Provider((_) => GoogleAuthService());
-
 final authApiProvider = Provider(
   (ref) => AuthApi(dio: ref.watch(apiClientProvider).dio),
 );
 
 final authRepositoryProvider = Provider(
   (ref) => AuthRepository(
-    googleAuthService: ref.watch(googleAuthServiceProvider),
     authApi: ref.watch(authApiProvider),
     sessionStorage: ref.watch(sessionStorageProvider),
   ),
@@ -50,31 +50,76 @@ class AuthController extends AsyncNotifier<AppUser?> {
     return ref.read(authRepositoryProvider).restoreSession();
   }
 
-  Future<void> signInWithGoogle() async {
+  /// Signs up. On success the state becomes the new [AppUser]; on failure it's
+  /// restored and an [AuthException] is rethrown so the form can show the message.
+  Future<void> register({
+    required String fullName,
+    required String email,
+    required String username,
+    required String password,
+  }) {
+    return _authenticate(
+      () => ref.read(authRepositoryProvider).register(
+        fullName: fullName,
+        email: email,
+        username: username,
+        password: password,
+      ),
+    );
+  }
+
+  /// Signs in. Same success/failure contract as [register].
+  Future<void> login({
+    required String usernameOrEmail,
+    required String password,
+  }) {
+    return _authenticate(
+      () => ref.read(authRepositoryProvider).login(
+        usernameOrEmail: usernameOrEmail,
+        password: password,
+      ),
+    );
+  }
+
+  Future<void> _authenticate(Future<AppUser> Function() call) async {
     final previousState = state;
     state = const AsyncLoading();
-
     try {
-      final user = await ref.read(authRepositoryProvider).signInWithGoogle();
-      state = AsyncData(user);
-    } on GoogleSignInCanceled {
-      // User backed out of the account picker - not an error worth showing.
+      state = AsyncData(await call());
+    } catch (error) {
+      // Don't leave the controller in an error state (the router would keep the
+      // user signed out with no clear recovery); restore the prior state and let
+      // the form surface the message from the rethrown exception.
       state = previousState;
-    } catch (error, stackTrace) {
-      state = AsyncError(error, stackTrace);
+      rethrow;
+    }
+  }
+
+  /// Stops the on-device USSD forwarder so nothing keeps dialing once signed out,
+  /// in either mode. Best-effort and Android-only; a native hiccup must never block
+  /// sign-out/deletion. [clear] wipes stored config + PINs (account deletion).
+  Future<void> _stopForwarding({bool clear = false}) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await const ForwardingChannel().stopForwarding(clear: clear);
+    } on PlatformException {
+      // Ignore — the sign-out must still complete.
+    } on MissingPluginException {
+      // Ignore — channel unavailable (e.g. tests).
     }
   }
 
   Future<void> signOut() async {
+    // Stop forwarding BEFORE clearing the session so it can never linger.
+    await _stopForwarding();
     await ref.read(authRepositoryProvider).signOut();
     state = const AsyncData(null);
   }
 
   /// Called when a backend call returns 401: the stored token is expired or
-  /// invalid, so clear just the local session (not the Google account, so
-  /// re-signing in is a single tap) and drop to signed-out. The router then
-  /// redirects to the sign-in screen. Idempotent - concurrent 401s that all
-  /// fire this are harmless once the state is already null.
+  /// invalid, so clear the local session and drop to signed-out. The router then
+  /// redirects to the sign-in screen. Idempotent - concurrent 401s that all fire
+  /// this are harmless once the state is already null.
   Future<void> handleSessionExpired() async {
     if (state.value == null) return;
     await ref.read(sessionStorageProvider).clear();
@@ -84,6 +129,9 @@ class AuthController extends AsyncNotifier<AppUser?> {
   /// Permanently deletes the account, then drops to the signed-out state. Throws
   /// on failure so the caller can surface an error and keep the user signed in.
   Future<void> deleteAccount() async {
+    // Wipe on-device forwarding (config + encrypted PINs) as part of deletion,
+    // before the backend delete, so nothing survives the account.
+    await _stopForwarding(clear: true);
     await ref.read(authRepositoryProvider).deleteAccount();
     state = const AsyncData(null);
   }

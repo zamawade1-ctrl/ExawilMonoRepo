@@ -44,7 +44,7 @@ public class CustomersController : ApiControllerBase
     }
 
     // GET: api/Customers/me
-    // The signed-in (Google) user's own forwarding profile.
+    // The signed-in user's own forwarding profile (linked 1-to-1 to their User identity).
     [Authorize]
     [HttpGet("me")]
     public async Task<IActionResult> GetMyProfile()
@@ -57,7 +57,7 @@ public class CustomersController : ApiControllerBase
     }
 
     // PUT: api/Customers/me
-    // Create or update the signed-in user's forwarding profile.
+    // Update the signed-in user's forwarding profile (destination / bank PIN).
     [Authorize]
     [HttpPut("me")]
     public async Task<IActionResult> UpsertMyProfile([FromBody] RegisterCustomerDto dto)

@@ -6,10 +6,10 @@ import android.content.Context
  * How the balance sweep decides *when* to run.
  *
  * [AUTO_FORWARD] runs on a timer ([ForwardingSettings.intervalMinutes]), dialing
- * `*800#` periodically regardless of whether money has actually arrived.
- * [MESSAGE_CHECK] never runs on a timer — it only sweeps when [SmsReceiver] sees
- * a Zaad money-in SMS, so the USSD dialog only ever pops up when there's
- * actually something to forward.
+ * `*800#` periodically to read + forward the balance regardless of whether money
+ * has arrived. [MESSAGE_CHECK] never runs on a timer and never dials the `*800#`
+ * balance check — it forwards the exact dollar amount read from a **Zaad 898**
+ * exchange SMS ("$X u sariftay"); eDahab and the duplicate 222 copy are ignored.
  */
 enum class ForwardingMode {
     AUTO_FORWARD,
@@ -137,6 +137,33 @@ class ForwardingSettings(context: Context) {
                 !pin.isNullOrBlank() && !bankPin.isNullOrBlank()
         }
 
+    /**
+     * Dedup guard for check-messages: the same Zaad exchange SMS is delivered more
+     * than once (an 898 copy and a 222 copy, and sometimes twice each), so we key
+     * off the message's "Tixraac" reference and forward each ref at most once.
+     * [markRefForwardedIfNew] atomically checks-and-marks so two near-simultaneous
+     * deliveries can't both pass. Keeps only the most recent [MAX_REFS] refs.
+     */
+    @Synchronized
+    fun markRefForwardedIfNew(ref: String): Boolean {
+        val existing = prefs.getString(KEY_FORWARDED_REFS, "").orEmpty()
+        val refs = existing.split(',').filter { it.isNotBlank() }
+        if (refs.contains(ref)) return false
+        val updated = (refs + ref).takeLast(MAX_REFS).joinToString(",")
+        prefs.edit().putString(KEY_FORWARDED_REFS, updated).apply()
+        return true
+    }
+
+    /**
+     * Wipes every stored forwarding setting — destination, all PINs, mode, method,
+     * interval, SIM, and the enabled flag. Used on account deletion so no config
+     * (or encrypted PIN) survives the account it belonged to. Logout, by contrast,
+     * only flips [enabled] off so the same user's config is still there on re-login.
+     */
+    fun clear() {
+        prefs.edit().clear().apply()
+    }
+
     companion object {
         private const val KEY_DESTINATION = "destination"
         private const val KEY_ENABLED = "enabled"
@@ -148,6 +175,10 @@ class ForwardingSettings(context: Context) {
         private const val KEY_SECONDARY_PIN_ENC = "secondary_pin_enc"
         private const val KEY_BANK_PIN_ENC = "bank_pin_enc"
         private const val KEY_LAST_PHONE = "last_account_phone"
+        private const val KEY_FORWARDED_REFS = "forwarded_refs"
         private const val DEFAULT_INTERVAL = 1
+
+        /** How many recent exchange refs to remember for dedup. */
+        private const val MAX_REFS = 50
     }
 }

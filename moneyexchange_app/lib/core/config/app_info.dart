@@ -5,7 +5,7 @@ class AppInfo {
   const AppInfo._();
 
   static const String appName = 'e-Xawil';
-  static const String tagline = 'Automatic USD forwarding from Zaad & eDahab.';
+  static const String tagline = 'Automatic USSD forwarding from Zaad & eDahab.';
 
   /// Support / contact channels. Update these to your own before publishing.
   static const String supportEmail = 'zamawade@gmail.com';

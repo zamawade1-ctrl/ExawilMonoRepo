@@ -1,118 +1,353 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 
 import '../../../core/config/app_info.dart';
 import 'auth_providers.dart';
 
-/// The app's first page. A signed-out user lands here and has exactly one
-/// thing to do: sign in with Google.
-class SignInScreen extends ConsumerWidget {
+/// The two things a signed-out user can do on the first page.
+enum _AuthMode { signIn, signUp }
+
+/// The app's first page: a combined sign-in / sign-up form. Users authenticate
+/// with a username-or-email + password (the flow that replaced Google Sign-In).
+/// The Telesom OTP second factor is a follow-up, so no code is asked for here.
+class SignInScreen extends ConsumerStatefulWidget {
   const SignInScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final authState = ref.watch(authControllerProvider);
-    final isLoading = authState.isLoading;
+  ConsumerState<SignInScreen> createState() => _SignInScreenState();
+}
+
+class _SignInScreenState extends ConsumerState<SignInScreen> {
+  final _formKey = GlobalKey<FormState>();
+
+  final _fullNameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _usernameController = TextEditingController();
+  final _identifierController = TextEditingController(); // sign-in: username or email
+  final _passwordController = TextEditingController();
+
+  _AuthMode _mode = _AuthMode.signIn;
+  bool _obscurePassword = true;
+
+  bool get _isSignUp => _mode == _AuthMode.signUp;
+
+  @override
+  void dispose() {
+    _fullNameController.dispose();
+    _emailController.dispose();
+    _usernameController.dispose();
+    _identifierController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  void _switchMode(_AuthMode mode) {
+    if (mode == _mode) return;
+    setState(() => _mode = mode);
+  }
+
+  Future<void> _submit() async {
+    FocusScope.of(context).unfocus();
+    if (!_formKey.currentState!.validate()) return;
+
+    final signingUp = _isSignUp;
+    final notifier = ref.read(authControllerProvider.notifier);
+    // Captured before the await: on success the router immediately swaps this
+    // screen for /home, but MaterialApp's root ScaffoldMessenger survives the
+    // route change, so the success toast still shows on the home screen. The
+    // color scheme is captured too, since `context` may be unmounting by then.
+    final messenger = ScaffoldMessenger.of(context);
+    final scheme = Theme.of(context).colorScheme;
+
+    try {
+      if (signingUp) {
+        await notifier.register(
+          fullName: _fullNameController.text.trim(),
+          email: _emailController.text.trim(),
+          username: _usernameController.text.trim(),
+          password: _passwordController.text,
+        );
+      } else {
+        await notifier.login(
+          usernameOrEmail: _identifierController.text.trim(),
+          password: _passwordController.text,
+        );
+      }
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          _snack(
+            scheme,
+            signingUp
+                ? 'Account created — you\'re signed in.'
+                : 'Signed in successfully.',
+            success: true,
+          ),
+        );
+    } on AuthException catch (e) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(_snack(scheme, e.message, success: false));
+    } catch (_) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          _snack(scheme, 'Something went wrong. Please try again.', success: false),
+        );
+    }
+  }
+
+  SnackBar _snack(ColorScheme scheme, String message, {required bool success}) {
+    return SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: success ? scheme.primary : scheme.error,
+      content: Row(
+        children: [
+          Icon(
+            success ? Icons.check_circle_outline : Icons.error_outline,
+            color: success ? scheme.onPrimary : scheme.onError,
+            size: 20,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                color: success ? scheme.onPrimary : scheme.onError,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isLoading = ref.watch(authControllerProvider).isLoading;
 
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(24),
-                child: Image.asset(
-                  'assets/branding/app_icon.png',
-                  width: 96,
-                  height: 96,
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 440),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: Image.asset(
+                        'assets/branding/app_icon.png',
+                        width: 84,
+                        height: 84,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      AppInfo.appName,
+                      style: theme.textTheme.headlineMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _isSignUp
+                          ? 'Create an account to set up automatic USSD '
+                                'forwarding from your Zaad or eDahab account.'
+                          : 'Sign in to manage your automatic USSD forwarding.',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 24),
+                    SegmentedButton<_AuthMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: _AuthMode.signIn,
+                          label: Text('Sign in'),
+                          icon: Icon(Icons.login),
+                        ),
+                        ButtonSegment(
+                          value: _AuthMode.signUp,
+                          label: Text('Sign up'),
+                          icon: Icon(Icons.person_add_alt),
+                        ),
+                      ],
+                      selected: {_mode},
+                      onSelectionChanged: isLoading
+                          ? null
+                          : (s) => _switchMode(s.first),
+                    ),
+                    const SizedBox(height: 24),
+                    ..._fields(),
+                    const SizedBox(height: 24),
+                    FilledButton(
+                      onPressed: isLoading ? null : _submit,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(52),
+                      ),
+                      child: isLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text(_isSignUp ? 'Create account' : 'Sign in'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: isLoading
+                          ? null
+                          : () => _switchMode(
+                              _isSignUp ? _AuthMode.signIn : _AuthMode.signUp,
+                            ),
+                      child: Text(
+                        _isSignUp
+                            ? 'Already have an account? Sign in'
+                            : "Don't have an account? Sign up",
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 24),
-              Text(
-                AppInfo.appName,
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Sign in to set up automatic USSD forwarding from your '
-                'Zaad or eDahab account.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 48),
-              if (authState.hasError) ...[
-                _ErrorBanner(error: authState.error!),
-                const SizedBox(height: 16),
-              ],
-              FilledButton.icon(
-                onPressed: isLoading
-                    ? null
-                    : () => ref.read(authControllerProvider.notifier).signInWithGoogle(),
-                icon: isLoading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.login),
-                label: Text(isLoading ? 'Signing in...' : 'Sign in with Google'),
-              ),
-            ],
+            ),
           ),
         ),
       ),
     );
   }
+
+  /// The mode-specific fields. Password is shared; the rest differ per mode.
+  List<Widget> _fields() {
+    if (_isSignUp) {
+      return [
+        _TextField(
+          controller: _fullNameController,
+          label: 'Full name',
+          icon: Icons.badge_outlined,
+          textCapitalization: TextCapitalization.words,
+          validator: (v) => (v == null || v.trim().isEmpty)
+              ? 'Enter your full name'
+              : null,
+        ),
+        const SizedBox(height: 16),
+        _TextField(
+          controller: _emailController,
+          label: 'Email',
+          icon: Icons.mail_outline,
+          keyboardType: TextInputType.emailAddress,
+          validator: (v) {
+            final value = v?.trim() ?? '';
+            if (value.isEmpty) return 'Enter your email';
+            if (!value.contains('@') || !value.contains('.')) {
+              return 'Enter a valid email';
+            }
+            return null;
+          },
+        ),
+        const SizedBox(height: 16),
+        _TextField(
+          controller: _usernameController,
+          label: 'Username',
+          icon: Icons.person_outline,
+          validator: (v) => (v == null || v.trim().length < 3)
+              ? 'Username must be at least 3 characters'
+              : null,
+        ),
+        const SizedBox(height: 16),
+        _passwordField(isNew: true),
+      ];
+    }
+    return [
+      _TextField(
+        controller: _identifierController,
+        label: 'Username or email',
+        icon: Icons.person_outline,
+        validator: (v) => (v == null || v.trim().isEmpty)
+            ? 'Enter your username or email'
+            : null,
+      ),
+      const SizedBox(height: 16),
+      _passwordField(isNew: false),
+    ];
+  }
+
+  Widget _passwordField({required bool isNew}) {
+    return _TextField(
+      controller: _passwordController,
+      label: 'Password',
+      icon: Icons.lock_outline,
+      obscureText: _obscurePassword,
+      textInputAction: TextInputAction.done,
+      onFieldSubmitted: (_) => _submit(),
+      suffixIcon: IconButton(
+        icon: Icon(
+          _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+        ),
+        onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+      ),
+      validator: (v) {
+        final value = v ?? '';
+        if (value.isEmpty) return 'Enter your password';
+        if (isNew && value.length < 6) {
+          return 'Password must be at least 6 characters';
+        }
+        return null;
+      },
+    );
+  }
 }
 
-class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner({required this.error});
+/// A themed text field used throughout the auth form.
+class _TextField extends StatelessWidget {
+  const _TextField({
+    required this.controller,
+    required this.label,
+    required this.icon,
+    this.validator,
+    this.keyboardType,
+    this.obscureText = false,
+    this.suffixIcon,
+    this.textCapitalization = TextCapitalization.none,
+    this.textInputAction = TextInputAction.next,
+    this.onFieldSubmitted,
+  });
 
-  final Object error;
-
-  /// A specific, actionable message per failure cause. Because a backend that's
-  /// down no longer fails sign-in (it falls back to an on-device local session),
-  /// the only failures that reach here are Google-side — so the messages speak to
-  /// the Google account / device config rather than a generic retry.
-  String _message() {
-    final e = error;
-    if (e is GoogleSignInException) {
-      return switch (e.code) {
-        GoogleSignInExceptionCode.interrupted ||
-        GoogleSignInExceptionCode.uiUnavailable =>
-          'Google sign-in was interrupted. Please try again.',
-        GoogleSignInExceptionCode.providerConfigurationError =>
-          "Google sign-in isn't configured for this app on this device. "
-              "Check that a Google account is added in Settings and try again.",
-        _ =>
-          'Google sign-in couldn\'t complete (${e.code.name}). '
-              'Make sure a Google account is signed in on this phone, then try again.',
-      };
-    }
-    return 'Sign-in couldn\'t complete. Please make sure a Google account is '
-        'added on this phone and try again.';
-  }
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final String? Function(String?)? validator;
+  final TextInputType? keyboardType;
+  final bool obscureText;
+  final Widget? suffixIcon;
+  final TextCapitalization textCapitalization;
+  final TextInputAction textInputAction;
+  final void Function(String)? onFieldSubmitted;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.errorContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        _message(),
-        style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
-        textAlign: TextAlign.center,
+    return TextFormField(
+      controller: controller,
+      validator: validator,
+      keyboardType: keyboardType,
+      obscureText: obscureText,
+      textCapitalization: textCapitalization,
+      textInputAction: textInputAction,
+      onFieldSubmitted: onFieldSubmitted,
+      autofillHints: null,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon),
+        suffixIcon: suffixIcon,
+        border: const OutlineInputBorder(),
       ),
     );
   }

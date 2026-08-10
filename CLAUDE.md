@@ -1,9 +1,16 @@
 # MoneyExchange (mono-repo)
 
-Money-exchange / auto-forwarding product. Customers sign in with Google, register a phone
-number and a payout preference (mobile number or bank account), and a backend job polls Zaad
-and eDahab every minute for USD received on that phone number, auto-forwarding it to the
-customer's chosen destination.
+Money-exchange / auto-forwarding product. Customers sign up / sign in with a username (or email)
+and password, set a payout preference (mobile number or bank account), and money received on
+their Zaad/eDahab account is auto-forwarded to their chosen destination (on-device on Android; a
+backend polling job is the server-side fallback).
+
+> **Auth note:** this used to be Google Sign-In; it's now **username/email + password**. The
+> `User` is the login identity (it holds the credentials + JWT); each `User` owns one linked
+> `Customer` forwarding profile, created together at sign-up (see "Identity model" below).
+> Telesom OTP is scaffolded as a future first-login second factor but is **not required** today.
+> The Google code path (`IGoogleTokenVerifier`, `POST /api/auth/google`) is left in place but
+> **dormant** — the app no longer uses it.
 
 Two projects live side by side in this repo:
 
@@ -25,11 +32,13 @@ ASP.NET Core (.NET 10) Web API.
   a normal EF Core + Postgres setup, not the Supabase JS/Auth SDK. There is no Node/JS in the
   backend; don't add `@supabase/*` npm packages here.
 - JWT bearer auth (`Microsoft.AspNetCore.Authentication.JwtBearer`)
-- Google Sign-In verified directly against Google's public keys (`Google.Apis.Auth`) — **not**
-  Supabase Auth. Supabase Auth's free tier caps at 50K monthly active users and adds a hop to a
-  hosted auth service on every login; verifying the Google ID token's JWT signature ourselves
-  has neither limit, since it's just a local signature check against Google's (cached) public
-  keys, not a call to any rate-limited service.
+- **Username/email + password auth**: `POST /api/auth/register` and `POST /api/auth/login`
+  (in `UserAuthRepository`), passwords hashed with ASP.NET Core's `PasswordHasher<User>`
+  (PBKDF2). The JWT's subject is the `User` id with a `subjectType=user` claim. Register creates
+  the `User` **and** its linked `Customer` in one transaction. This replaced Google Sign-In — no
+  hosted auth provider (e.g. Supabase Auth) is involved.
+- Legacy/dormant: Google Sign-In verified against Google's public keys (`Google.Apis.Auth`),
+  reachable at `POST /api/auth/google`. Kept compiling but unused by the app.
 
 ## Architecture pattern
 
@@ -55,34 +64,38 @@ Services/
 Migrations/            EF Core migrations (Postgres)
 ```
 
-## Identity model: User vs Customer
+## Identity model: User (identity) + Customer (profile), 1-to-1
 
-Two separate entities, linked 1-to-1 via `Customer.UserId` (nullable FK):
+Two entities, linked 1-to-1 via `Customer.UserId`. **Sign-up creates both in one transaction**
+(`UserAuthRepository.RegisterAsync`), so the tables are always populated and related together:
 
-- **`User`** — identity, established by Google Sign-In. Email, Google subject id, name,
-  profile picture. Owns the JWT.
-- **`Customer`** — the money-forwarding profile: phone number (matched against incoming
-  Zaad/eDahab receipts), and forwarding destination (mobile number or bank account). Created via
-  the registration form, independent of whether the customer has signed in with Google.
+- **`User`** — the login identity + credentials: `FullName`, `Email`, `Username`, `PasswordHash`
+  (PBKDF2, `[JsonIgnore]`d so it never leaves the API), `LastLoginAtUtc`. `Email`/`Username` are
+  unique; `GoogleSubjectId` is nullable (only the dormant Google path sets it). **Owns the JWT** —
+  subject = `User.Id`, `subjectType=user`.
+- **`Customer`** — the money-forwarding profile owned by that user: `PhoneNumber` (future OTP +
+  server-side receipt matching), `ForwardingMethod` + `ForwardingPhoneNumber` (mobile) or
+  `BankAccountNumber` (repurposed to hold the bank PIN), `IsVerified`.
 
-They're kept separate because they answer different questions ("who is this person" vs "where
-should their money go") and a `Customer` can currently exist without a linked `User` (the
-registration endpoint is still anonymous - see "OTP is bypassed" below). Wiring registration to
-require a signed-in `User` and auto-populate `UserId` is a follow-up, not yet done.
+The FK cascades: deleting the `User` deletes its `Customer`. `ApiControllerBase`'s
+`TryGetAuthenticatedUserId` reads the JWT subject; `/api/customers/me` (GET/PUT) and
+`DELETE /api/auth/me` are scoped to the signed-in user and operate on its linked customer.
+(Mobile forwarding PINs are **not** stored server-side — they live in the Android Keystore
+on-device; only the bank PIN persists, in `Customer.BankAccountNumber`.)
 
 ## Domain flow
 
-1. `POST /api/auth/google` — the Flutter app's first page. Exchanges a Google ID token for our
-   own JWT + `User` profile. Verified via `IGoogleTokenVerifier` (`Google.Apis.Auth`), no
-   Supabase Auth involved.
-2. `POST /api/customers` — the registration form: name, phone number, and forwarding choice
+1. `POST /api/auth/register` — the Flutter app's sign-up form: full name, email, username,
+   password. Creates the `User` + its linked `Customer` and returns a signed-in JWT (no OTP for
+   now). `POST /api/auth/login` — the sign-in form: username-or-email + password → JWT.
+2. `PUT /api/customers/me` — the signed-in customer sets their forwarding choice
    (`ForwardingMethod.MobileNumber` + `ForwardingPhoneNumber`, or `ForwardingMethod.BankAccount`
-   + bank fields). Anonymous.
-3. `POST /api/auth/otp/request` / `POST /api/auth/otp/verify` — Telesom OTP login flow (phone
-   number, not Google), issues a JWT tied to `Customer`. **Currently not required** — see "OTP
-   is bypassed" below.
+   + `BankAccountNumber` PIN). `GET /api/customers/me` reads it back. (The old anonymous
+   `POST /api/customers` register endpoint still exists but the app doesn't use it.)
+3. `POST /api/auth/otp/request` / `POST /api/auth/otp/verify` — Telesom OTP flow, scaffolded as a
+   future first-login second factor. **Currently not required** — see "OTP is bypassed" below.
 4. Every 60 seconds, `MoneyForwardingBackgroundService` polls `IMoneyProviderClient` for Zaad and
-   eDahab, matches each USD receipt to a `Customer` by phone number, and forwards it via
+   eDahab, matches each USSD receipt to a `Customer` by phone number, and forwards it via
    `IMoneyForwardingService` to that customer's mobile number or bank account. Every attempt is
    recorded in `IncomingMoneyTransaction` (deduped by provider transaction id), visible via
    `GET /api/incomingmoneytransactions`.
@@ -93,9 +106,10 @@ The Telesom OTP API isn't available yet, so `CustomerRepository.RegisterAsync` s
 `Customer.IsVerified = true` immediately at registration instead of requiring the OTP round
 trip. The auth scaffold (`AuthController`'s `otp/*` routes, `ITelesomOtpService`,
 `OtpVerification` entity, JWT issuance) is fully built and still works if called — it's just not
-required for a customer to receive auto-forwarded money. When the real Telesom API is available:
-implement `ITelesomOtpService` for real, and change that one line back to `IsVerified = false`.
-(This is unrelated to Google Sign-In, which is a separate, already-live identity flow.)
+required for a customer to receive auto-forwarded money. `AuthRepository.RegisterAsync` sets
+`IsVerified = true` on sign-up for the same reason. When the real Telesom API is available:
+implement `ITelesomOtpService` for real, wire OTP as a first-login second factor, and flip those
+lines back to `IsVerified = false`.
 
 ## Stub integrations — swap points
 
@@ -158,7 +172,10 @@ dotnet ef database update           # apply pending migrations to the configured
 
 `dotnet run` also applies pending migrations automatically on startup.
 
-## Google Sign-In setup (Google Cloud Console)
+## Google Sign-In setup (Google Cloud Console) — LEGACY / DORMANT
+
+> The app authenticates with username/password now; this section applies only if you re-enable
+> the dormant Google path. Not needed for normal development.
 
 OAuth client IDs are not secret (unlike client secrets) - the real values can live directly in
 `appsettings.json` under `GoogleAuth:Audiences`, no user-secrets needed for this one.
@@ -203,18 +220,18 @@ silent fallback for a missing OAuth audience).
 
 # moneyexchange_app (frontend)
 
-Flutter app, Android + iOS. First screen is Google Sign-In; a signed-in user lands on a
-placeholder home screen. The forwarding-preference registration form and transaction dashboard
-are a follow-up pass.
+Flutter app, Android + iOS. First screen is the **sign-in / sign-up form** (`sign_in_screen.dart`,
+a `SegmentedButton` toggling the two modes); a signed-in user lands on the home shell. Sign-up
+collects full name / email / username / password; sign-in takes username-or-email + password.
 
 ## Stack
 
 - `flutter_riverpod` — state management (`AsyncNotifier<AppUser?>` in `auth_providers.dart` is
-  the single source of truth for "who's signed in")
+  the single source of truth for "who's signed in"; `register`/`login` on `AuthController`)
 - `go_router` — navigation, with a `redirect` that guards `/home` behind sign-in and bounces a
   signed-in user away from `/sign-in`
-- `google_sign_in` (v7 API - `GoogleSignIn.instance.initialize()` / `.authenticate()`, not the
-  older instance-method API)
+- Auth is username/password against the backend (`auth_api.dart` → `/api/auth/register|login`).
+  The `google_sign_in` package is still in `pubspec.yaml` but no longer used in `lib/`.
 - `dio` — HTTP client, JWT attached automatically via an interceptor in `ApiClient`
 - `flutter_secure_storage` — JWT + cached profile persisted in the platform keychain/keystore,
   never SharedPreferences
@@ -231,13 +248,15 @@ lib/
     routing/app_router.dart     go_router + auth guard
   features/
     auth/
-      data/                    google_auth_service.dart, auth_api.dart, auth_repository.dart
+      data/                    auth_api.dart, auth_repository.dart (register/login + session)
       domain/app_user.dart
       presentation/            auth_providers.dart, sign_in_screen.dart (the first page)
-    home/presentation/home_screen.dart   placeholder post-login screen
+    home/presentation/home_shell.dart    signed-in frame (home / transactions / accessibility)
 ```
 
-## Google Sign-In setup (verified working on both platforms)
+## Google Sign-In setup (verified working on both platforms) — LEGACY / DORMANT
+
+> Superseded by username/password auth. Kept for reference in case the Google path is revived.
 
 Google Sign-In cannot complete without real OAuth client IDs from *your* Google Cloud project -
 this can't be scaffolded generically. What's below is confirmed working end-to-end (real Google
@@ -271,10 +290,24 @@ iOS Simulator, not just theory.
 
 ## Running locally
 
+Only `API_BASE_URL` is needed now (Google client ID is no longer used):
+
 ```bash
 cd moneyexchange_app
-flutter run --dart-define=API_BASE_URL=... --dart-define=GOOGLE_SERVER_CLIENT_ID=...
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:5219        # Android emulator
+
+# USB-connected physical device (most robust — survives Wi-Fi/IP changes): tunnel the device's
+# localhost to the host with adb reverse, then point the app at localhost.
+adb reverse tcp:5219 tcp:5219
+flutter run --dart-define=API_BASE_URL=http://localhost:5219
+#   ...or over Wi-Fi (same network): use the host's LAN IP (`ipconfig getifaddr en0`) and run the
+#   API on 0.0.0.0 (dotnet run --urls http://0.0.0.0:5219). Cleartext HTTP is allowed in
+#   AndroidManifest.xml (usesCleartextTraffic=true).
+
+# Build + install a release APK on the device (same adb reverse tunnel applies at runtime):
+flutter build apk --release --dart-define=API_BASE_URL=http://localhost:5219
+adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
 
 `flutter analyze` and `flutter test` both pass with zero configuration (the widget test mocks
-the secure-storage platform channel, so it doesn't need real Google/backend config).
+the secure-storage platform channel, so it doesn't need real backend config).

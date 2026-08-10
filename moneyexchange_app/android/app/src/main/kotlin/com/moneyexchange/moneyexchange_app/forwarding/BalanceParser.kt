@@ -1,16 +1,32 @@
 package com.moneyexchange.moneyexchange_app.forwarding
 
 /**
- * Parses the balance-check USSD response screen (shown after `*800#` → PIN →
- * menu option 1). Extracts:
- *   - the USD balance as a [Double], used to decide whether to forward and how
- *     much, and
- *   - the account's own phone number, recorded for reference.
+ * Extracts the account **balance** from the `*800#` USSD balance screen ("…
+ * Available Balance: $2.6697" / "Hadhaageedu waa $10.00"). Used by the AUTO_FORWARD
+ * sweep (and the manual "sweep now" action), which dial `*800#` and forward the
+ * balance. MESSAGE_CHECK does NOT use this — it forwards the exact exchanged amount
+ * parsed from the 898 SMS by [SmsMoneyParser.exchangedUsd] and never dials `*800#`.
  *
- * DEVICE/CARRIER-SPECIFIC: the exact wording of the balance screen varies. The
- * matchers below are broad (English + Somali) and will likely need a small tweak
- * once the real *800# response text is known — capture it from the on-device
- * logs (the accessibility service logs the raw screen text).
+ * [receivedUsd] is a legacy amount matcher kept only for tests.
+ *
+ * ## Why we key off the balance *phrase*, not the first "$…"
+ * A received-money SMS contains TWO dollar amounts — the incoming transaction
+ * amount first, then the resulting balance:
+ *
+ *   "…$100 Received from MUNA … , Your New A/C Balance is $150.0045"  → balance 150.0045
+ *   "…$50 Received from SUHAYB … , Your New A/C Balance is $50"        → balance 50
+ *   "…Waxaad $5 ka heshay … , hadhaagaadu waa: $5"                     → balance 5
+ *   "Hadhaageedu waa $10.00"   (the *800# balance screen)             → balance 10.00
+ *
+ * Grabbing the first "$…" would forward the *transaction* amount, not the
+ * balance — the "check-messages isn't reading the balance" bug. So we match the
+ * amount that immediately follows a balance phrase ("… Balance is",
+ * "hadhaag… waa", "haraag…", "lacagta"), which is always the balance.
+ *
+ * SAFETY: the outgoing forward confirmation ("$X sent to …, Your Balance is
+ * $0.07") also carries a "Balance is" phrase, so it MUST be hard-blocked before
+ * it ever reaches here — [SmsMoneyParser.isOutgoingOrIgnorable] does that off the
+ * "sent to" / "u sariftay" markers, so we never forward against our own send.
  */
 object BalanceParser {
 
@@ -23,47 +39,69 @@ object BalanceParser {
         val reason: String,
     )
 
-    // A "$12.50" / "USD 12.50" / "12.50 USD" style amount, optionally near a
-    // balance keyword. We take the amount that sits closest to a balance marker
-    // when one is present, otherwise the first currency-looking amount.
-    private val DOLLAR_AMOUNT =
-        Regex("""(?:\$|usd)\s*([0-9][0-9,]*(?:\.[0-9]+)?)""", RegexOption.IGNORE_CASE)
-    private val AMOUNT_DOLLAR =
-        Regex("""([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:\$|usd|dollars?)""", RegexOption.IGNORE_CASE)
+    /**
+     * The balance is the amount that follows a balance phrase. Handles the
+     * English "… Balance is $150.0045" / "Balance: $10" and the Somali
+     * "hadhaagaadu waa: $5" / "Hadhaageedu waa $10.00" shapes. The "$"/currency
+     * marker and the "waa"/":" connector are optional so wording variants still
+     * match; the captured group is always the numeric balance.
+     */
+    private val BALANCE_PHRASE = Regex(
+        """(?:balance\s+is|balance|hadhaag\w*|haraag\w*|lacagta)\s*(?:waa)?\s*[:=]?\s*(?:\$|usd)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * The USD amount RECEIVED, used as a FALLBACK for the check-messages (898)
+     * flow when a money-in SMS carries no balance clause. Real ZAAD money-in
+     * messages usually include "… Hadhaagaagu waa $X" (a balance, preferred), but
+     * some just say "Waxaad $X ka heshay <name>" with no balance — without this
+     * fallback those arrive and forward nothing. Matches the "$X" that sits right
+     * before a received marker ("$1 ka heshay", "$125 Received from …").
+     *
+     * The leading "$" is REQUIRED so a bare number elsewhere (a ref id, a date, an
+     * account number) can never be mistaken for an amount. SAFETY: callers MUST
+     * have already excluded outgoing/ignorable messages via
+     * [SmsMoneyParser.isOutgoingOrIgnorable] before using this — an outgoing
+     * "$X sent to …" also has a "$X" and would otherwise be read as received.
+     */
+    private val RECEIVED_USD = Regex(
+        """\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:ka\s+heshay|kaa\s+heshay|received\s+from)""",
+        RegexOption.IGNORE_CASE,
+    )
 
     // Phone number: an international or local Somali-style number (7–15 digits,
     // optional +, spaces/dashes allowed between).
     private val PHONE = Regex("""(\+?\d[\d\s-]{6,14}\d)""")
-
-    private val BALANCE_KEYWORDS = listOf("balance", "hadhaag", "haraaga", "lacagta")
 
     fun parse(text: String): Result {
         val balance = extractBalance(text)
         val phone = extractPhone(text)
 
         return when {
-            balance == null -> Result(null, phone, "no balance amount found in screen text")
+            balance == null -> Result(null, phone, "no balance phrase found in text")
             else -> Result(balance, phone, "balance=$balance phone=${phone ?: "?"}")
         }
     }
 
+    /**
+     * Reads the balance that sits right after a balance phrase. We deliberately
+     * do NOT fall back to "any $ amount": a stray amount elsewhere (the incoming
+     * transaction amount, an exchange rate, a menu label) must never be treated
+     * as the balance and forwarded against. No balance phrase → null → skip.
+     */
     private fun extractBalance(text: String): Double? {
-        // Require the amount to sit on a line that names the balance (e.g.
-        // "Hadhaageedu waa $10.00"). We deliberately do NOT fall back to "any $
-        // amount in the text": a stray amount elsewhere (an exchange rate, a menu
-        // label, or even our own app UI) must never be treated as the balance and
-        // forwarded against. No labelled balance line → null → skip the forward.
-        val lines = text.split('\n', '\r')
-        val keyworded = lines.firstOrNull { line ->
-            BALANCE_KEYWORDS.any { line.contains(it, ignoreCase = true) } && amountIn(line) != null
-        }
-        val raw = keyworded?.let { amountIn(it) } ?: return null
+        val raw = BALANCE_PHRASE.find(text)?.groupValues?.get(1) ?: return null
         return raw.replace(",", "").toDoubleOrNull()
     }
 
-    private fun amountIn(s: String): String? =
-        DOLLAR_AMOUNT.find(s)?.groupValues?.get(1)
-            ?: AMOUNT_DOLLAR.find(s)?.groupValues?.get(1)
+    /**
+     * The USD amount received, or null if the text isn't a "$X received" message.
+     * Used only as a fallback when [extractBalance] finds no balance clause. See
+     * [RECEIVED_USD] for the safety contract (callers must exclude outgoing first).
+     */
+    fun receivedUsd(text: String): Double? =
+        RECEIVED_USD.find(text)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
 
     private fun extractPhone(text: String): String? {
         val match = PHONE.find(text)?.groupValues?.get(1) ?: return null

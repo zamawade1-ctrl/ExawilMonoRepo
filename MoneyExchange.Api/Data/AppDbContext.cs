@@ -31,7 +31,11 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<User>(entity =>
         {
+            // Login credentials live on the identity. Email + Username unique; GoogleSubjectId is
+            // now nullable (password accounts have none) - Postgres treats the many NULLs as
+            // distinct, so a unique index still works.
             entity.HasIndex(e => e.Email).IsUnique();
+            entity.HasIndex(e => e.Username).IsUnique();
             entity.HasIndex(e => e.GoogleSubjectId).IsUnique();
         });
 
@@ -41,10 +45,12 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.PhoneNumber).IsUnique();
             entity.HasIndex(e => e.UserId).IsUnique();
 
+            // 1-to-1: each User owns one Customer forwarding profile. Deleting the User cascades
+            // to its Customer (account deletion removes both).
             entity.HasOne(e => e.User)
-                .WithOne()
+                .WithOne(u => u.Customer)
                 .HasForeignKey<Customer>(e => e.UserId)
-                .OnDelete(DeleteBehavior.SetNull);
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<OtpVerification>(entity =>

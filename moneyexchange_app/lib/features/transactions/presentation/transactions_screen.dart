@@ -2,32 +2,40 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
-import '../domain/incoming_transaction.dart';
-import 'transactions_providers.dart';
+import '../../dashboard/domain/device_transaction.dart';
+import '../../dashboard/presentation/dashboard_providers.dart';
 
-/// The Transactions tab: every USD receipt matched to this user and what
-/// happened when we tried to auto-forward it.
+/// The Transactions tab: the full on-device ledger — every money-in that arrived
+/// and every forward the device made — newest first. This is the real record of
+/// what the on-device forwarder did (the backend only ever sees the server-side
+/// polling fallback, which the USSD/SMS path never uses).
 class TransactionsScreen extends ConsumerWidget {
-  const TransactionsScreen({super.key});
+  const TransactionsScreen({super.key, this.controller});
+
+  /// Owned by the home shell so re-tapping the tab can scroll to the top.
+  final ScrollController? controller;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(transactionsControllerProvider);
+    final state = ref.watch(deviceLedgerProvider);
 
     return RefreshIndicator(
-      onRefresh: () => ref.read(transactionsControllerProvider.notifier).refresh(),
+      onRefresh: () => ref.read(deviceLedgerProvider.notifier).refresh(),
       child: state.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, _) => _ErrorState(
-          onRetry: () => ref.invalidate(transactionsControllerProvider),
+          onRetry: () => ref.read(deviceLedgerProvider.notifier).refresh(),
         ),
         data: (transactions) => transactions.isEmpty
             ? const _EmptyState()
             : ListView.separated(
+                controller: controller,
+                physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.all(16),
                 itemCount: transactions.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 8),
-                itemBuilder: (context, index) => _TransactionTile(transaction: transactions[index]),
+                itemBuilder: (context, index) =>
+                    _TransactionTile(transaction: transactions[index]),
               ),
       ),
     );
@@ -53,14 +61,11 @@ class _EmptyState extends StatelessWidget {
                 children: [
                   Icon(Icons.inbox_outlined, size: 56, color: theme.colorScheme.onSurfaceVariant),
                   const SizedBox(height: 16),
-                  Text(
-                    'No transactions yet',
-                    style: theme.textTheme.titleMedium,
-                  ),
+                  Text('No transactions yet', style: theme.textTheme.titleMedium),
                   const SizedBox(height: 8),
                   Text(
-                    'Money received on Zaad or eDahab will show up here once it\'s '
-                    'been auto-forwarded.',
+                    'Money received on Zaad and every auto-forward will show up '
+                    'here, newest first.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -99,12 +104,33 @@ class _ErrorState extends StatelessWidget {
 class _TransactionTile extends StatelessWidget {
   const _TransactionTile({required this.transaction});
 
-  final IncomingTransaction transaction;
+  final DeviceTransaction transaction;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final dateFormat = DateFormat.yMMMd().add_jm();
+    final money = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+    final isReceived = transaction.isReceived;
+
+    final (icon, iconBg, iconFg) = isReceived
+        ? (
+          Icons.south_west,
+          theme.colorScheme.tertiaryContainer,
+          theme.colorScheme.onTertiaryContainer,
+        )
+        : (
+          Icons.north_east,
+          theme.colorScheme.primaryContainer,
+          theme.colorScheme.onPrimaryContainer,
+        );
+
+    final title = isReceived
+        ? 'Received ${money.format(transaction.amountUsd)}'
+        : 'Forwarded ${money.format(transaction.amountUsd)}';
+    final subtitle = isReceived
+        ? (transaction.provider ?? 'Zaad')
+        : 'to ${transaction.destinationLabel}';
 
     return Card(
       child: Padding(
@@ -112,24 +138,27 @@ class _TransactionTile extends StatelessWidget {
         child: Row(
           children: [
             CircleAvatar(
-              backgroundColor: theme.colorScheme.secondaryContainer,
-              child: Text(
-                transaction.provider.label.substring(0, 1),
-                style: TextStyle(color: theme.colorScheme.onSecondaryContainer),
-              ),
+              backgroundColor: iconBg,
+              child: Icon(icon, color: iconFg, size: 20),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Text(title, style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 2),
                   Text(
-                    '\$${transaction.amountUsd.toStringAsFixed(2)} via ${transaction.provider.label}',
-                    style: theme.textTheme.titleSmall,
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    dateFormat.format(transaction.receivedAt.toLocal()),
+                    dateFormat.format(transaction.timestamp.toLocal()),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -137,7 +166,7 @@ class _TransactionTile extends StatelessWidget {
                 ],
               ),
             ),
-            _StatusChip(status: transaction.forwardStatus),
+            if (transaction.isForwarded) _StatusChip(status: transaction.status),
           ],
         ),
       ),
@@ -148,32 +177,22 @@ class _TransactionTile extends StatelessWidget {
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.status});
 
-  final ForwardStatus status;
+  final DeviceTxStatus status;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
     final (label, background, foreground) = switch (status) {
-      ForwardStatus.forwarded => (
+      DeviceTxStatus.success || DeviceTxStatus.none => (
         'Forwarded',
         theme.colorScheme.primaryContainer,
         theme.colorScheme.onPrimaryContainer,
       ),
-      ForwardStatus.pending => (
-        'Pending',
-        theme.colorScheme.tertiaryContainer,
-        theme.colorScheme.onTertiaryContainer,
-      ),
-      ForwardStatus.failed => (
+      DeviceTxStatus.failed => (
         'Failed',
         theme.colorScheme.errorContainer,
         theme.colorScheme.onErrorContainer,
-      ),
-      ForwardStatus.unmatched => (
-        'Unmatched',
-        theme.colorScheme.surfaceContainerHighest,
-        theme.colorScheme.onSurfaceVariant,
       ),
     };
 

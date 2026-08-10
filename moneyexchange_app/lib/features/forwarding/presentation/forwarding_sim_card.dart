@@ -134,8 +134,8 @@ class _ForwardingSimCardState extends ConsumerState<ForwardingSimCard> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Only the default SIM is available. Grant the phone permission on the '
-                  'Accessibility tab to choose a specific SIM on a dual-SIM phone.',
+                  'Only the default SIM is available. Grant the phone permission in '
+                  'Settings to choose a specific SIM on a dual-SIM phone.',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),

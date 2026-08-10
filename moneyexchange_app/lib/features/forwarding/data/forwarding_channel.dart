@@ -111,6 +111,19 @@ class ForwardingStatus {
   /// Whether the destination is a bank account (vs a mobile number).
   bool get isBankMethod => forwardingMethod == 1;
 
+  /// Whether every device permission the forwarder needs is granted: SMS/phone/
+  /// SIM runtime permissions, the accessibility (auto-type PIN) service, and the
+  /// display-over-other-apps overlay. Device permissions only — not whether a
+  /// destination/PIN is configured (that's [fullyReady]). The permissions are
+  /// requested on first run via system prompts + the accessibility guide dialog;
+  /// there's no longer a full-screen onboarding gate or an Accessibility tab.
+  bool get permissionsReady =>
+      hasSmsPermission &&
+      hasCallPermission &&
+      hasPhoneStatePermission &&
+      accessibilityEnabled &&
+      overlayEnabled;
+
   /// Everything the native forwarder needs before the balance sweep can run.
   /// The credential requirements differ by method: mobile needs a destination
   /// number + both PINs, bank needs only the account PIN + the bank PIN.
@@ -234,4 +247,12 @@ class ForwardingChannel {
   /// Runs one balance-sweep cycle now (dial *800#, read balance, forward if
   /// ≥ $1), for testing on a real device without waiting for the next tick.
   Future<void> sweepNow() => _channel.invokeMethod('sweepNow');
+
+  /// Stops the on-device forwarder so no USSD runs once the user is signed out —
+  /// in either mode. Disables the enabled flag (standing down the SMS-driven
+  /// message-check path and the boot receiver) and tears the poller + its alarm
+  /// down. Pass [clear] true on account deletion to also wipe all stored config
+  /// and encrypted PINs. No-op on non-Android platforms.
+  Future<void> stopForwarding({bool clear = false}) =>
+      _channel.invokeMethod('stopForwarding', {'clear': clear});
 }

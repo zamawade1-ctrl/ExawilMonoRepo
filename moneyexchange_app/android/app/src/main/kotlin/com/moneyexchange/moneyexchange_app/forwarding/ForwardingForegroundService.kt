@@ -26,13 +26,15 @@ import kotlin.math.floor
  *   2. if the balance is at least $1, dial `*806*dest*amount*secondaryPin#` and
  *      type the primary PIN on the confirmation popup.
  *
- * *When* a sweep runs depends on [ForwardingSettings.mode]:
- *  - [ForwardingMode.AUTO_FORWARD]: on a timer, every `intervalMinutes`, for as
- *    long as forwarding stays enabled — this is the persistent, always-on poller.
- *  - [ForwardingMode.MESSAGE_CHECK]: never on a timer. The service only ever
- *    receives [ACTION_SWEEP_NOW], fired by [SmsReceiver] when a money-in SMS
- *    arrives (or by the app's manual test action), and stops itself again right
- *    after so it doesn't linger as a foreground service between messages.
+ * The two modes forward differently:
+ *  - [ForwardingMode.AUTO_FORWARD]: on a timer, every `intervalMinutes`, runs a
+ *    full `*800#` **balance sweep** ([ACTION_SWEEP_NOW]) and forwards the balance —
+ *    the persistent, always-on poller.
+ *  - [ForwardingMode.MESSAGE_CHECK]: no timer, and NO `*800#` balance check. Each
+ *    time [SmsReceiver] sees a **Zaad 898** dollar-exchange SMS it forwards the
+ *    exact exchanged amount read from that SMS ([ACTION_FORWARD_AMOUNT]), then stops
+ *    itself again. eDahab / the duplicate 222 copy never trigger anything; forwards
+ *    are deduped by the SMS ref so a double-delivered exchange can't double-send.
  *
  * ## Interval accuracy (why AlarmManager, not postDelayed)
  * The periodic tick is driven by an **exact AlarmManager alarm**, scheduled at a
@@ -83,22 +85,27 @@ class ForwardingForegroundService : Service() {
         when (intent?.action) {
             ACTION_STOP -> stopEverything()
 
-            ACTION_SWEEP_NOW ->
-                // Manual pull-to-refresh (or a money-in SMS): run the USSD NOW,
-                // ignoring the interval timer, using whichever mode/method/
-                // destination is currently saved (runOneSweep reads settings fresh).
-                // Never dropped — if a sweep is running it's queued to run the
-                // instant that one finishes. When done, the interval re-anchors to
-                // now (see [sweepWorker]) so the manual refresh and the timer don't
-                // double-run or block each other.
+            ACTION_SWEEP_NOW -> {
+                // A sweep dials *800#, reads the REAL balance, and forwards it. This is
+                // the auto-forward path (timer / manual refresh / manual "sweep now"
+                // button). Check-messages does NOT use this — it forwards the exact
+                // exchanged amount from the SMS (ACTION_FORWARD_AMOUNT). Only
+                // auto-forward re-anchors its interval; after any non-poller sweep the
+                // service stands itself down (see [stopIfNotAutoForwardPoller]).
+                if (ForwardingSettings(this).mode == ForwardingMode.AUTO_FORWARD) {
+                    resetIntervalCountdown()
+                }
                 requestManualSweep()
+            }
 
             ACTION_FORWARD_AMOUNT -> {
-                // Check-messages (898) path: forward the amount read from the SMS
-                // directly. Runs only if idle (a running sweep already moves the
-                // money); stops the service after if it isn't the auto-forward poller.
-                val balance = intent.getDoubleExtra(EXTRA_BALANCE_USD, 0.0)
-                requestDirectSend(balance)
+                // Check-messages: a Zaad 898 exchange SMS arrived; [SmsReceiver] already
+                // read the exchanged dollar amount. Forward exactly that amount to the
+                // destination — NO *800# balance check — deduped by the SMS's ref so a
+                // double-delivered exchange can't double-send.
+                val amount = intent.getDoubleExtra(EXTRA_AMOUNT_USD, 0.0)
+                val ref = intent.getStringExtra(EXTRA_REF)
+                requestDirectForward(amount, ref)
             }
 
             ACTION_TICK -> {
@@ -119,7 +126,7 @@ class ForwardingForegroundService : Service() {
 
             // ACTION_START, or a sticky restart (null intent): only start the
             // timer in AUTO_FORWARD mode. In MESSAGE_CHECK mode there's nothing to
-            // do until SmsReceiver fires ACTION_SWEEP_NOW, so just stop again.
+            // do until SmsReceiver fires ACTION_FORWARD_AMOUNT, so just stop again.
             else -> {
                 if (ForwardingSettings(this).mode == ForwardingMode.AUTO_FORWARD) {
                     startPeriodic()
@@ -180,6 +187,89 @@ class ForwardingForegroundService : Service() {
         postSweepWorker()
     }
 
+    /**
+     * Check-messages direct forward: forward the exact [amountUsd] read from a Zaad
+     * 898 exchange SMS — NO *800# balance check. Deduped by [ref]: the same exchange
+     * is double-delivered, so we forward each ref at most once
+     * ([ForwardingSettings.markRefForwardedIfNew], atomic under [sweepLock]). Runs
+     * only if idle — an in-flight forward defers nothing, since the ref is only
+     * consumed once the forward actually starts — then stands the service down.
+     */
+    private fun requestDirectForward(amountUsd: Double, ref: String?) {
+        synchronized(sweepLock) {
+            // Dedup FIRST, inside the lock, so two near-simultaneous deliveries of the
+            // same ref can't both pass. Only consume the ref if we can start now.
+            if (ref != null && !ForwardingSettings(this).markRefForwardedIfNew(ref)) {
+                Log.i(TAG, "Exchange ref=$ref already forwarded; skipping duplicate.")
+                stopIfNotAutoForwardPoller()
+                return
+            }
+            if (sweepRunning) {
+                Log.i(TAG, "Forward already running; skipping this 898-triggered forward (ref=$ref).")
+                stopIfNotAutoForwardPoller()
+                return
+            }
+            sweepRunning = true
+        }
+        val h = handler
+        if (h == null) {
+            synchronized(sweepLock) { sweepRunning = false }
+            return
+        }
+        h.post {
+            try {
+                withWakeLock { runDirectForward(amountUsd) }
+            } catch (e: Throwable) {
+                Log.e(TAG, "898 exchange forward failed", e)
+            } finally {
+                synchronized(sweepLock) { sweepRunning = false }
+                stopIfNotAutoForwardPoller()
+            }
+        }
+    }
+
+    /**
+     * Forwards the exact [amountUsd] (whole-dollar floored) that a Zaad 898 exchange
+     * SMS reported — dialing the forwarding USSD directly (`*806#` one-shot for
+     * mobile, or the `*800#` deposit walk for bank), with NO balance-check `*800#`.
+     * Records the RECEIVED + FORWARDED events for the dashboard.
+     */
+    private fun runDirectForward(amountUsd: Double) {
+        val settings = ForwardingSettings(this)
+        val primary = settings.pin
+        if (!settings.isReady() || primary == null) {
+            Log.w(TAG, "898 exchange forward but settings incomplete/disabled; skipping.")
+            return
+        }
+        val subscriptionId = settings.simSubscriptionId
+        val amount = computeForwardAmount(amountUsd) ?: return
+
+        // The exchanged dollars are money in — log RECEIVED, paired with FORWARDED below.
+        TransactionStore.record(this, TransactionStore.TYPE_RECEIVED, amount.toDouble(), provider = "Zaad")
+
+        if (settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT) {
+            val bankPin = settings.bankPin
+            if (bankPin == null) {
+                Log.w(TAG, "898 exchange bank forward but no bank PIN stored; skipping.")
+                return
+            }
+            Log.i(TAG, "898 exchange \$$amountUsd → bank-forwarding \$$amount (whole dollars); no *800#.")
+            val ok = performBankSend(primary, bankPin, amount, subscriptionId)
+            recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok)
+        } else {
+            val destination = settings.destination
+            val secondary = settings.secondaryPin
+            if (destination == null || secondary == null) {
+                Log.w(TAG, "898 exchange forward but mobile settings incomplete; skipping.")
+                return
+            }
+            Log.i(TAG, "898 exchange \$$amountUsd → forwarding \$$amount (whole dollars) to $destination; no *800#.")
+            UssdSession.beginDirectSend(primary, secondary, destination)
+            val ok = performSend(destination, amount, secondary, subscriptionId)
+            recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok)
+        }
+    }
+
     private fun postSweepWorker() {
         val h = handler
         if (h == null) {
@@ -207,7 +297,7 @@ class ForwardingForegroundService : Service() {
                     manualQueued = false
                 }
                 try {
-                    withWakeLock { runOneSweep() }
+                    withWakeLock { runOneSweep(wasManual) }
                     if (wasManual) {
                         val settings = ForwardingSettings(this)
                         if (settings.enabled && settings.mode == ForwardingMode.AUTO_FORWARD) {
@@ -240,37 +330,6 @@ class ForwardingForegroundService : Service() {
     }
 
     /**
-     * 898 direct send (check-messages). Runs only if idle; a running sweep already
-     * moves the balance, so skipping a colliding 898 is safe. Stops the service
-     * afterward unless it's the persistent auto-forward poller.
-     */
-    private fun requestDirectSend(balance: Double) {
-        synchronized(sweepLock) {
-            if (sweepRunning) {
-                Log.i(TAG, "Sweep running; skipping 898 direct send.")
-                stopIfNotAutoForwardPoller()
-                return
-            }
-            sweepRunning = true
-        }
-        val h = handler
-        if (h == null) {
-            synchronized(sweepLock) { sweepRunning = false }
-            return
-        }
-        h.post {
-            try {
-                withWakeLock { runDirectSend(balance) }
-            } catch (e: Throwable) {
-                Log.e(TAG, "898 direct send failed", e)
-            } finally {
-                synchronized(sweepLock) { sweepRunning = false }
-                stopIfNotAutoForwardPoller()
-            }
-        }
-    }
-
-    /**
      * Tears the service down when it isn't the persistent auto-forward poller
      * (i.e. check-messages mode, or forwarding disabled), so a one-off sweep
      * doesn't leave a foreground service lingering.
@@ -279,6 +338,21 @@ class ForwardingForegroundService : Service() {
         val settings = ForwardingSettings(this)
         if (!(settings.enabled && settings.mode == ForwardingMode.AUTO_FORWARD)) {
             stopEverything()
+        }
+    }
+
+    /**
+     * Resets the periodic-interval countdown to a full interval starting now, so a
+     * manual pull-to-refresh is authoritative over the timer: any pending tick is
+     * replaced (same PendingIntent, FLAG_UPDATE_CURRENT) so it can't fire during or
+     * right after the refresh, and the interval counts fresh from the refresh. No-op
+     * unless the auto-forward poller is active (message-check mode has no timer).
+     */
+    private fun resetIntervalCountdown() {
+        val settings = ForwardingSettings(this)
+        if (settings.enabled && settings.mode == ForwardingMode.AUTO_FORWARD) {
+            Log.i(TAG, "Manual refresh: resetting the interval countdown to now.")
+            scheduleNextTick(SystemClock.elapsedRealtime())
         }
     }
 
@@ -386,7 +460,7 @@ class ForwardingForegroundService : Service() {
      * Runs exactly one balance-check → (maybe) forward cycle, blocking on this
      * background thread while the accessibility service drives the dialogs.
      */
-    private fun runOneSweep() {
+    private fun runOneSweep(isManual: Boolean) {
         val settings = ForwardingSettings(this)
         val primary = settings.pin
         if (!settings.isReady() || primary == null) {
@@ -394,9 +468,8 @@ class ForwardingForegroundService : Service() {
             return
         }
         val subscriptionId = settings.simSubscriptionId
-        if (inCooldown()) return
 
-        Log.i(TAG, "Starting balance sweep on sub=$subscriptionId.")
+        Log.i(TAG, "Starting balance sweep on sub=$subscriptionId (manual=$isManual).")
         // Phase 1 — balance check, identical for both methods: *800# → primary PIN →
         // menu option 1 → read balance + account number. The session's destination /
         // secondary PIN are unused for bank, so pass placeholders there.
@@ -406,17 +479,37 @@ class ForwardingForegroundService : Service() {
             return
         }
 
-        if (!awaitStep(UssdSession.Step.BALANCE_CAPTURED)) {
+        // Wait until the balance has actually been READ. The balance-dialog close
+        // that follows is best-effort and must NOT gate the forward: a stalled close
+        // (its confirming accessibility frame never arrives) used to abort the whole
+        // cycle right here, so a balance ≥ $1 was seen but never forwarded — the
+        // intermittent "checks the balance, finds > $1, skips the forward, works a
+        // few attempts later" bug. Now we forward whenever the balance was captured.
+        if (!awaitBalanceRead()) {
             Log.w(TAG, "Balance check timed out / failed; aborting cycle.")
             UssdSession.finish()
             return
         }
-
+        // As soon as the balance is READ we move straight to the forward — no wait.
+        // The leftover balance dialog is static (it fires no accessibility events,
+        // so it can't be closed here anyway) and the fresh *800#/*806# dial below
+        // supersedes it, so waiting for it to close was pure dead time (~6s) between
+        // "balance confirmed" and "money forwarded". Forward immediately instead.
         val amount = computeForwardAmount(UssdSession.balanceUsd)
         if (amount == null) {
             UssdSession.finish()
             return
         }
+        // The balance we're about to forward is money that has arrived on the
+        // account — log it as RECEIVED so the dashboard's received chart reflects
+        // it, paired with the FORWARDED event the send below records.
+        TransactionStore.record(this, TransactionStore.TYPE_RECEIVED, amount.toDouble(), provider = "Zaad")
+
+        // No post-forward cooldown: every sweep re-reads the LIVE balance via *800#
+        // (Zaad debits synchronously — the confirm dialog already shows the new
+        // balance), sweeps are serialized by [sweepLock] so two never overlap, and
+        // our own "transferred to bank" confirmation isn't a trigger. So a ≥ $1
+        // balance is ALWAYS forwarded right away, and a stale re-read can't double-send.
 
         // Phase 2 — forward the swept balance, by destination method.
         if (settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT) {
@@ -427,7 +520,10 @@ class ForwardingForegroundService : Service() {
                 return
             }
             Log.i(TAG, "Balance \$${UssdSession.balanceUsd} → bank-forwarding \$$amount (whole dollars).")
-            performBankSend(primary, bankPin, amount, subscriptionId)
+            val ok = performBankSend(primary, bankPin, amount, subscriptionId)
+            // Bank forwards go to the KAAFI bank account, NOT settings.destination
+            // (which may hold a leftover mobile number) — label it as such.
+            recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok)
         } else {
             val destination = settings.destination
             val secondary = settings.secondaryPin
@@ -437,65 +533,32 @@ class ForwardingForegroundService : Service() {
             }
             Log.i(TAG, "Balance \$${UssdSession.balanceUsd} → forwarding \$$amount (whole dollars) to $destination.")
             UssdSession.beginSend()
-            performSend(destination, amount, secondary, subscriptionId)
+            val ok = performSend(destination, amount, secondary, subscriptionId)
+            recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok)
         }
     }
 
     /**
-     * Check-messages (898) path: the amount was already read from the incoming
-     * SMS, so this skips the `*800#` balance check entirely and goes straight to
-     * dialing `*806*destination*amount*secondaryPin#`, letting the accessibility
-     * service auto-fill the primary PIN on the confirmation popup — the same
-     * second step the sweep uses. [balanceUsd] is the balance parsed off the 898
-     * message; it's floored to whole dollars and passed through the same
-     * min/max/cooldown guards as a sweep.
+     * Logs a FORWARDED event to the on-device ledger (the dashboard + Transactions
+     * tab read it). [ok] is the send's success signal — whether the confirmation
+     * PIN / bank confirm was actually driven — so a failed/timed-out cycle is
+     * recorded as such rather than silently dropped.
      */
-    private fun runDirectSend(balanceUsd: Double) {
-        val settings = ForwardingSettings(this)
-        val primary = settings.pin
-        if (!settings.isReady() || primary == null) {
-            Log.w(TAG, "898 forward requested but settings incomplete/disabled; skipping.")
-            return
+    private fun recordForwarded(amount: String, destination: String?, method: ForwardingMethod, ok: Boolean) {
+        val dest = when {
+            !destination.isNullOrBlank() -> destination
+            method == ForwardingMethod.BANK_ACCOUNT -> "Bank account"
+            else -> null
         }
-        val subscriptionId = settings.simSubscriptionId
-        if (inCooldown()) return
-
-        val amount = computeForwardAmount(balanceUsd) ?: return
-
-        if (settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT) {
-            val bankPin = settings.bankPin
-            if (bankPin == null) {
-                Log.w(TAG, "898 bank forward but no bank PIN stored; skipping.")
-                return
-            }
-            Log.i(TAG, "898 balance \$$balanceUsd → bank-forwarding \$$amount (whole dollars).")
-            performBankSend(primary, bankPin, amount, subscriptionId)
-        } else {
-            val destination = settings.destination
-            val secondary = settings.secondaryPin
-            if (destination == null || secondary == null) {
-                Log.w(TAG, "898 forward requested but mobile settings incomplete; skipping.")
-                return
-            }
-            Log.i(TAG, "898 balance \$$balanceUsd → forwarding \$$amount (whole dollars) to $destination.")
-            UssdSession.beginDirectSend(primary, secondary, destination)
-            performSend(destination, amount, secondary, subscriptionId)
-        }
-    }
-
-    /**
-     * Post-forward cooldown: after we send, Zaad needs a moment to debit the
-     * account before a fresh balance reflects it. Without this, a check that
-     * fires before the balance updates would read the old (still-high) balance
-     * and forward a SECOND time — a double-send. True = still cooling down, skip.
-     */
-    private fun inCooldown(): Boolean {
-        val sinceForward = SystemClock.elapsedRealtime() - lastForwardAtMs
-        if (lastForwardAtMs != 0L && sinceForward < FORWARD_COOLDOWN_MS) {
-            Log.i(TAG, "In post-forward cooldown (${(FORWARD_COOLDOWN_MS - sinceForward) / 1000}s left); skipping.")
-            return true
-        }
-        return false
+        TransactionStore.record(
+            this,
+            TransactionStore.TYPE_FORWARDED,
+            amount.toDouble(),
+            destination = dest,
+            method = method.ordinal,
+            status = if (ok) TransactionStore.STATUS_SUCCESS else TransactionStore.STATUS_FAILED,
+            provider = "Zaad",
+        )
     }
 
     /**
@@ -528,20 +591,23 @@ class ForwardingForegroundService : Service() {
      * "you sent…" result dialog (SEND_DONE). Shared by the sweep and the 898
      * flow; the caller must have already armed the session's send step.
      */
-    private fun performSend(destination: String, amount: String, secondaryPin: String, subscriptionId: Int) {
+    private fun performSend(destination: String, amount: String, secondaryPin: String, subscriptionId: Int): Boolean {
         if (!UssdDialer.dialSend(this, destination, amount, secondaryPin, subscriptionId)) {
             UssdSession.finish()
-            return
+            return false
         }
-        // Start the cooldown the moment we've committed the send.
-        lastForwardAtMs = SystemClock.elapsedRealtime()
 
-        if (!awaitStep(UssdSession.Step.SEND_PIN_DONE)) {
+        // SEND_PIN_DONE = the confirmation PIN was auto-typed and the forward
+        // submitted; that's our success signal. The later result-dialog close is
+        // best-effort cosmetics and must not flip a submitted forward to "failed".
+        val submitted = awaitStep(UssdSession.Step.SEND_PIN_DONE)
+        if (!submitted) {
             Log.w(TAG, "Send confirmation not completed within the window.")
         } else if (!awaitStep(UssdSession.Step.SEND_DONE, RESULT_CLOSE_CAP_MS)) {
             Log.w(TAG, "Result dialog did not appear/auto-close within ${RESULT_CLOSE_CAP_MS / 1000}s.")
         }
         UssdSession.finish()
+        return submitted
     }
 
     /**
@@ -553,23 +619,43 @@ class ForwardingForegroundService : Service() {
      * bank step must already be armed by the caller via [UssdSession.beginBankSend]
      * — done here so the dial and the arm can't race.
      */
-    private fun performBankSend(primary: String, bankPin: String, amount: String, subscriptionId: Int) {
+    private fun performBankSend(primary: String, bankPin: String, amount: String, subscriptionId: Int): Boolean {
         UssdSession.beginBankSend(primary, bankPin, amount)
         if (!UssdDialer.dialBalanceCheck(this, subscriptionId)) { // bank deposit walk also starts at *800#
             UssdSession.finish()
-            return
+            return false
         }
-        // Start the cooldown the moment we've committed to the deposit dial.
-        lastForwardAtMs = SystemClock.elapsedRealtime()
 
+        // BANK_CONFIRM_DONE = the deposit was confirmed/submitted; success signal.
         // The bank walk has ~7 dialogs, so give the whole sequence a generous cap;
         // a genuinely stuck step is still caught by the per-dialog window timeout.
-        if (!awaitStep(UssdSession.Step.BANK_CONFIRM_DONE, BANK_AWAIT_CAP_MS)) {
+        val confirmed = awaitStep(UssdSession.Step.BANK_CONFIRM_DONE, BANK_AWAIT_CAP_MS)
+        if (!confirmed) {
             Log.w(TAG, "Bank forward not confirmed within the window.")
         } else if (!awaitStep(UssdSession.Step.BANK_DONE, RESULT_CLOSE_CAP_MS)) {
             Log.w(TAG, "Bank result dialog did not appear/auto-close within ${RESULT_CLOSE_CAP_MS / 1000}s.")
         }
         UssdSession.finish()
+        return confirmed
+    }
+
+    /**
+     * Polls until the accessibility service has parsed a balance (the value the
+     * forward decision needs), or the cycle fails / the dialog window times out.
+     * Deliberately keys off the balance being READ, not the balance dialog being
+     * closed, so a flaky close can't abort a forward that should happen.
+     */
+    private fun awaitBalanceRead(): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + AWAIT_CAP_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
+            when {
+                UssdSession.balanceUsd != null -> return true
+                UssdSession.step == UssdSession.Step.FAILED -> return false
+                UssdSession.isTimedOut() -> return false
+            }
+            SystemClock.sleep(POLL_MS)
+        }
+        return false
     }
 
     /** Polls the shared session until it reaches [target], fails, or times out. */
@@ -635,6 +721,11 @@ class ForwardingForegroundService : Service() {
         const val ACTION_START = "com.moneyexchange.forwarding.START"
         const val ACTION_STOP = "com.moneyexchange.forwarding.STOP"
         const val ACTION_SWEEP_NOW = "com.moneyexchange.forwarding.SWEEP_NOW"
+
+        /**
+         * Fired by [SmsReceiver] on a Zaad 898 exchange SMS: forward the exact
+         * exchanged amount to the destination, deduped by the SMS ref, no *800#.
+         */
         const val ACTION_FORWARD_AMOUNT = "com.moneyexchange.forwarding.FORWARD_AMOUNT"
 
         /** Fired by [ForwardingTickReceiver] when the periodic exact alarm goes off. */
@@ -643,7 +734,11 @@ class ForwardingForegroundService : Service() {
         /** Elapsed-realtime this tick was scheduled for; used to anchor fixed-rate scheduling. */
         const val EXTRA_SCHEDULED_AT = "scheduled_at"
 
-        private const val EXTRA_BALANCE_USD = "balance_usd"
+        /** Exchanged USD amount (from the 898 SMS) to forward, on [ACTION_FORWARD_AMOUNT]. */
+        private const val EXTRA_AMOUNT_USD = "amount_usd"
+
+        /** The SMS "Tixraac" ref, for dedup, on [ACTION_FORWARD_AMOUNT]. */
+        private const val EXTRA_REF = "exchange_ref"
 
         private const val TAG = "Xawil/FgService"
         private const val CHANNEL_ID = "xawil_forwarding"
@@ -669,16 +764,6 @@ class ForwardingForegroundService : Service() {
          * below an account-id-sized number a bad parse could produce.
          */
         private const val MAX_FORWARD_USD = 100_000.0
-
-        /**
-         * How long to wait after a send before another sweep may forward again,
-         * so a not-yet-settled debit can't be double-forwarded on the next tick.
-         */
-        private const val FORWARD_COOLDOWN_MS = 3 * 60_000L
-
-        /** Elapsed-realtime of the last send we committed; 0 = none this process. */
-        @Volatile
-        private var lastForwardAtMs = 0L
 
         /** How long a single blocking wait for a step will poll before giving up. */
         private const val AWAIT_CAP_MS = 50_000L
@@ -717,18 +802,22 @@ class ForwardingForegroundService : Service() {
             startService(context, intent)
         }
 
-        /** Requests one immediate sweep without waiting for the next tick. */
+        /**
+         * Requests one immediate `*800#` balance sweep without waiting for the next
+         * tick — the auto-forward manual refresh / "sweep now" action.
+         */
         fun sweepNow(context: Context) = send(context, ACTION_SWEEP_NOW)
 
         /**
-         * Check-messages (898) path: forwards [balanceUsd] directly via `*806#`,
-         * skipping the balance-check dial. Started from [SmsReceiver] when a 898
-         * balance SMS arrives in message-check mode.
+         * Check-messages path: forward exactly [amountUsd] (the dollars a Zaad 898
+         * exchange SMS reported), deduped by [ref], with no *800# balance check.
+         * Started from [SmsReceiver.handleMessageCheck].
          */
-        fun forwardAmount(context: Context, balanceUsd: Double) {
+        fun forwardAmountFromMessage(context: Context, amountUsd: Double, ref: String?) {
             val intent = Intent(context, ForwardingForegroundService::class.java)
                 .setAction(ACTION_FORWARD_AMOUNT)
-                .putExtra(EXTRA_BALANCE_USD, balanceUsd)
+                .putExtra(EXTRA_AMOUNT_USD, amountUsd)
+                .putExtra(EXTRA_REF, ref)
             startService(context, intent)
         }
 

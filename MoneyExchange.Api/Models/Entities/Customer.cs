@@ -3,18 +3,19 @@ using System.ComponentModel.DataAnnotations;
 namespace MoneyExchange.Api.Models.Entities;
 
 /// <summary>
-/// A registered customer: their phone number (used for Telesom OTP login and
-/// for matching incoming Zaad/eDahab receipts) and where auto-forwarded USD
-/// should be sent.
+/// A registered customer's money-forwarding profile: their phone number (used for the future
+/// Telesom OTP second factor and for matching incoming Zaad/eDahab receipts) and where
+/// auto-forwarded USD should be sent. The login identity + credentials live on the linked
+/// <see cref="Entities.User"/> (1-to-1 via <see cref="UserId"/>); a Customer is created
+/// alongside its User at sign-up.
 /// </summary>
 public class Customer
 {
     public int Id { get; set; }
 
     /// <summary>
-    /// The signed-in identity (Google account) this forwarding profile belongs to, if the
-    /// customer signed in via the app. Nullable for now - the registration form can still be
-    /// filled out standalone; the app wires this up once a signed-in user completes it.
+    /// The <see cref="Entities.User"/> identity this forwarding profile belongs to (1-to-1).
+    /// Set at sign-up. Nullable only so legacy anonymously-registered rows still validate.
     /// </summary>
     public int? UserId { get; set; }
 

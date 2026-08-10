@@ -10,20 +10,21 @@ import android.util.Log
  * Wakes on every incoming SMS (even when the app isn't running) and reacts based
  * on the configured [ForwardingMode]:
  *
- *  - [ForwardingMode.AUTO_FORWARD]: a Zaad (222) *money-in* message triggers an
- *    immediate balance sweep (dial `*800#`, read the balance, forward it), so
- *    money moves right away instead of waiting for the next interval tick.
+ *  - [ForwardingMode.AUTO_FORWARD]: a Zaad *money-in* SMS triggers an immediate
+ *    balance sweep (dial `*800#`, read the balance, forward it), on top of the
+ *    periodic timer, so money moves right away instead of waiting for the next tick.
  *
- *  - [ForwardingMode.MESSAGE_CHECK]: there's no timer at all — forwarding is
- *    driven entirely by an **898** balance message. When one arrives we read the
- *    balance straight out of that SMS and forward it via `*806#` directly,
- *    without dialing `*800#` first. The accessibility service still auto-fills
- *    the primary PIN on the `*806#` confirmation popup, exactly as in a sweep.
+ *  - [ForwardingMode.MESSAGE_CHECK]: there's no timer. Forwarding is driven ONLY by
+ *    a **Zaad 898** dollar-exchange SMS ("…$X u sariftay…"). We read the exchanged
+ *    dollar amount $X straight from that message and forward exactly $X to the
+ *    destination (mobile `*806#` or the bank `*800#` deposit walk) — NO `*800#`
+ *    balance check. **eDahab, and the duplicate 222 copy of the same exchange SMS,
+ *    never trigger anything** — only the Zaad 898 copy.
  *
- * Classification is safety-critical: the "you sent X" confirmation Zaad sends
- * after our own forward is treated as outgoing and ignored, so it never
- * re-triggers a forward (which would loop and drain the account) — see
- * [SmsMoneyParser].
+ * Safety: the same exchange is double-delivered (898 + 222, sometimes twice), so
+ * forwards are deduped by the message's "Tixraac" reference to never double-send;
+ * our own forward output ("…transferred $X to your bank account", "$X sent to …")
+ * is not an exchange, so it never re-triggers a forward — see [SmsMoneyParser].
  *
  * The forward itself runs in [ForwardingForegroundService], which holds the
  * background-activity-start privilege needed to launch the USSD call (a plain
@@ -41,6 +42,10 @@ class SmsReceiver : BroadcastReceiver() {
         val body = messages.joinToString(separator = "") { it.messageBody ?: "" }
 
         val settings = ForwardingSettings(context)
+        // Always log the real sender + a body snippet: this line is what makes an
+        // on-device diagnosis ("why didn't check-messages fire?") possible from
+        // logcat without guessing at the exact originating address.
+        Log.i(TAG, "SMS from '$sender' (mode=${settings.mode}, ready=${settings.isReady()}): '${body.take(80)}'")
         if (!settings.isReady()) {
             Log.d(TAG, "Money SMS seen but forwarding not fully configured/enabled; skipping.")
             return
@@ -67,35 +72,39 @@ class SmsReceiver : BroadcastReceiver() {
     }
 
     /**
-     * Message-check: an 898 balance SMS carries the amount to forward. Read the
-     * balance out of it and forward that directly via `*806#` — no `*800#`.
+     * Check-messages: forward the exact dollar amount from a Zaad **898** exchange
+     * SMS ("…$X u sariftay…"). We read $X ([SmsMoneyParser.exchangedUsd]) and forward
+     * it straight to the destination (mobile `*806#` or the bank `*800#` deposit
+     * walk) — NO `*800#` balance check.
+     *
+     * SAFETY: only sender 898 triggers (the identical 222 copy is ignored); the
+     * "$X u sariftay" pattern excludes our own output ("transferred … to your bank
+     * account", "$X sent to …"), cash-outs ("ka sarifatay"), and OTPs; and forwards
+     * are deduped by the SMS "Tixraac" ref so a double-delivered exchange never
+     * double-sends.
      */
     private fun handleMessageCheck(context: Context, sender: String, body: String) {
-        if (!is898(sender)) {
-            Log.d(TAG, "Ignoring SMS from '$sender' (not 898).")
+        // Only the Zaad 898 copy triggers (the identical 222 copy is ignored here).
+        if (!SmsMoneyParser.isZaad898Sender(sender)) {
+            Log.d(TAG, "Ignoring SMS from '$sender' (check-messages triggers only on Zaad 898, not eDahab/222).")
             return
         }
-        // Hard block: never forward against our own send-confirmation / airtime.
-        if (SmsMoneyParser.isOutgoingOrIgnorable(body)) {
-            Log.i(TAG, "898 message is outgoing/ignorable; not forwarding.")
+        // Read the exchanged dollar amount straight from the "$X u sariftay" message.
+        val amount = SmsMoneyParser.exchangedUsd(body)
+        if (amount == null) {
+            Log.d(TAG, "898 SMS is not a dollar exchange ('\$X u sariftay'); ignoring.")
             return
         }
-        val balance = BalanceParser.parse(body).balanceUsd
-        if (balance == null) {
-            Log.i(TAG, "898 message received but no balance could be parsed; skipping.")
-            return
-        }
-        Log.i(TAG, "898 balance parsed ($balance); forwarding directly via *806#.")
-        ForwardingForegroundService.forwardAmount(context, balance)
+        // Dedup by the transaction ref: the same exchange is double-delivered, and we
+        // must never forward it twice. The service check-and-marks it atomically.
+        val ref = SmsMoneyParser.exchangeRef(body)
+        Log.i(TAG, "898 exchange \$$amount (ref=${ref ?: "?"}); forwarding that amount to the destination (no *800#).")
+        ForwardingForegroundService.forwardAmountFromMessage(context, amount, ref)
     }
 
-    /** v1 targets Zaad Shilling, short code 222. */
+    /** Auto-forward targets Zaad Shilling (sender 222 / "ZAAD"). */
     private fun isZaad(sender: String): Boolean =
         sender == "222" || sender.contains("ZAAD", ignoreCase = true)
-
-    /** Check-messages mode keys off the balance short code 898. */
-    private fun is898(sender: String): Boolean =
-        sender == "898" || sender.contains("898")
 
     companion object {
         private const val TAG = "Xawil/SmsReceiver"

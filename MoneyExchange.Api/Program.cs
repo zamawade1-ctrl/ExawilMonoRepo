@@ -1,8 +1,10 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using MoneyExchange.Api.Data;
+using MoneyExchange.Api.Models.Entities;
 using MoneyExchange.Api.Repositories.Implementations;
 using MoneyExchange.Api.Repositories.Interfaces;
 using MoneyExchange.Api.Services.Auth;
@@ -27,6 +29,9 @@ builder.Services.AddScoped<IUserAuthRepository, UserAuthRepository>();
 builder.Services.AddScoped<ITelesomOtpService, TelesomOtpService>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 
+// --- Password hashing for sign-up/sign-in (PBKDF2, ASP.NET Core's hasher) ---
+builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
+
 // --- Google Sign-In: verified directly against Google's public keys, no hosted auth provider ---
 builder.Services.AddScoped<IGoogleTokenVerifier, GoogleTokenVerifier>();
 
@@ -37,7 +42,7 @@ builder.Services.AddScoped<IMoneyProviderClient, EDahabMoneyProviderClient>();
 // --- Forwarding: stub until the real USSD gateway / bank-transfer integration is wired in ---
 builder.Services.AddScoped<IMoneyForwardingService, UssdMoneyForwardingService>();
 
-// --- Runs every 1 minute: polls Zaad/eDahab and auto-forwards received USD ---
+// --- Runs every 1 minute: polls Zaad/eDahab and auto-forwards received USSD ---
 builder.Services.AddHostedService<MoneyForwardingBackgroundService>();
 
 var jwtSection = builder.Configuration.GetSection("Jwt");

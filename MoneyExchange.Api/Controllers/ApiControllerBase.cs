@@ -41,4 +41,21 @@ public abstract class ApiControllerBase : ControllerBase
         var subject = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(JwtRegisteredClaimNames.Sub);
         return int.TryParse(subject, out userId);
     }
+
+    /// <summary>
+    /// Extracts the signed-in <c>Customer</c> id from the JWT, for endpoints scoped to "me".
+    /// The Customer is the authenticated identity in the phone/password flow, so its token's
+    /// subject is a Customer id (<c>subjectType=customer</c>). A legacy Google user token is
+    /// rejected here - its subject is a User id, not a Customer id.
+    /// </summary>
+    protected bool TryGetAuthenticatedCustomerId(out int customerId)
+    {
+        customerId = 0;
+
+        if (User.FindFirstValue("subjectType") != "customer")
+            return false;
+
+        var subject = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+        return int.TryParse(subject, out customerId);
+    }
 }

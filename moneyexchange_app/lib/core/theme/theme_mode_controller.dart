@@ -19,8 +19,10 @@ class ThemeModeController extends AsyncNotifier<ThemeMode> {
     return switch (stored) {
       'dark' => ThemeMode.dark,
       'light' => ThemeMode.light,
-      // No explicit choice yet - follow the system setting.
-      _ => ThemeMode.system,
+      // No explicit choice yet - default to the white (light) theme, which is
+      // the app's primary identity, rather than following a dark system setting.
+      // The settings toggle still lets a user opt into dark.
+      _ => ThemeMode.light,
     };
   }
 

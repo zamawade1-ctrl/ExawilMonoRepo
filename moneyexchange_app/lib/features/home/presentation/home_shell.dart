@@ -1,12 +1,14 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/config/app_info.dart';
 import '../../../core/routing/app_router.dart';
-import '../../accessibility/presentation/accessibility_screen.dart';
+import '../../dashboard/presentation/dashboard_providers.dart';
+import '../../dashboard/presentation/dashboard_screen.dart';
 import '../../forwarding/data/forwarding_channel.dart';
 import '../../auth/domain/app_user.dart';
 import '../../auth/presentation/auth_providers.dart';
@@ -17,9 +19,12 @@ import '../../forwarding/presentation/forwarding_mode_card.dart';
 import '../../forwarding/presentation/forwarding_providers.dart';
 import '../../forwarding/presentation/forwarding_sim_card.dart';
 import '../../transactions/presentation/transactions_screen.dart';
+import 'widgets/promo_slideshow.dart';
 
-/// The signed-in app's frame: an app bar with a left navigation drawer (menu),
-/// and a bottom nav switching between Home, Transactions, and Accessibility.
+/// The signed-in app's frame: an app bar with a left navigation drawer (menu)
+/// and a "run sweep now" action, plus a bottom nav switching between Home and
+/// Transactions. (The old Accessibility tab is gone — its manual-sweep button
+/// moved to the app bar and its permission asks are handled by the guide dialog.)
 class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
 
@@ -30,24 +35,77 @@ class HomeShell extends ConsumerStatefulWidget {
 class _HomeShellState extends ConsumerState<HomeShell> {
   int _selectedIndex = 0;
 
-  static const _titles = [AppInfo.appName, 'Transactions', 'Accessibility'];
+  static const _titles = ['Dashboard', 'Forwarding', 'Transactions'];
 
-  void _selectTab(int index) => setState(() => _selectedIndex = index);
+  /// One scroll controller per tab so re-tapping the current tab can scroll it
+  /// back to the top (the Facebook-style "tap the active nav icon" gesture).
+  final _scrollControllers = List.generate(3, (_) => ScrollController());
+
+  @override
+  void dispose() {
+    for (final c in _scrollControllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Bottom-nav / drawer tab switch. Re-selecting the tab you're already on
+  /// scrolls it to the top AND refreshes it — like tapping Home in Facebook.
+  void _selectTab(int index) {
+    if (index == _selectedIndex) {
+      _scrollToTop(index);
+      _refreshTab(index);
+      return;
+    }
+    setState(() => _selectedIndex = index);
+  }
+
+  void _scrollToTop(int index) {
+    final controller = _scrollControllers[index];
+    if (controller.hasClients) {
+      controller.animateTo(
+        0,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  void _refreshTab(int index) {
+    switch (index) {
+      case 0:
+      case 2:
+        // Dashboard and Transactions both read the on-device ledger.
+        ref.read(deviceLedgerProvider.notifier).refresh();
+      case 1:
+        ref.read(customerProfileControllerProvider.notifier).refresh();
+        if (Platform.isAndroid) {
+          ref.read(nativeForwardingProvider.notifier).refresh();
+        }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_titles[_selectedIndex])),
+      appBar: AppBar(
+        title: _AppBarTitle(title: _titles[_selectedIndex]),
+        // The manual balance-sweep trigger lives here now (was the Accessibility
+        // tab). Android-only, like the on-device forwarder itself.
+        actions: [
+          if (Platform.isAndroid) const _SweepNowAction(),
+        ],
+      ),
       drawer: _AppDrawer(
         selectedIndex: _selectedIndex,
         onSelectTab: _selectTab,
       ),
       body: IndexedStack(
         index: _selectedIndex,
-        children: const [
-          _HomeTab(),
-          TransactionsScreen(),
-          AccessibilityScreen(),
+        children: [
+          DashboardScreen(controller: _scrollControllers[0]),
+          _ForwardingTab(controller: _scrollControllers[1]),
+          TransactionsScreen(controller: _scrollControllers[2]),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -55,22 +113,93 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         onDestinationSelected: _selectTab,
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard),
             label: 'Home',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.swap_horiz_outlined),
+            selectedIcon: Icon(Icons.swap_horiz),
+            label: 'Forwarding',
           ),
           NavigationDestination(
             icon: Icon(Icons.receipt_long_outlined),
             selectedIcon: Icon(Icons.receipt_long),
             label: 'Transactions',
           ),
-          NavigationDestination(
-            icon: Icon(Icons.accessibility_new_outlined),
-            selectedIcon: Icon(Icons.accessibility_new),
-            label: 'Accessibility',
-          ),
         ],
       ),
+    );
+  }
+}
+
+/// App-bar action that kicks off one balance-sweep cycle on demand (dial *800#,
+/// read balance, forward if ≥ $1) without waiting for the next timer tick.
+/// Moved here from the old Accessibility tab; Android-only.
+class _SweepNowAction extends StatelessWidget {
+  const _SweepNowAction();
+
+  Future<void> _run(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await const ForwardingChannel().sweepNow();
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Balance sweep started')),
+      );
+    } on PlatformException {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not start the sweep')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: 'Run a sweep now',
+      icon: const Icon(Icons.science_outlined),
+      onPressed: () => _run(context),
+    );
+  }
+}
+
+/// Branded app-bar title: the app icon in a rounded tile next to the current
+/// tab's name, so the product identity is always visible at the top.
+class _AppBarTitle extends StatelessWidget {
+  const _AppBarTitle({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.asset(
+            'assets/branding/app_icon.png',
+            width: 30,
+            height: 30,
+            fit: BoxFit.cover,
+            // Never let a missing asset take down the whole app bar.
+            errorBuilder: (_, _, _) => Icon(
+              Icons.bolt,
+              color: theme.colorScheme.primary,
+              size: 26,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          title,
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: theme.colorScheme.onSurface,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -99,7 +228,7 @@ class _AppDrawer extends ConsumerWidget {
                 padding: EdgeInsets.zero,
                 children: [
                   _DrawerTile(
-                    icon: Icons.home_outlined,
+                    icon: Icons.dashboard_outlined,
                     label: 'Home',
                     selected: selectedIndex == 0,
                     onTap: () {
@@ -108,8 +237,8 @@ class _AppDrawer extends ConsumerWidget {
                     },
                   ),
                   _DrawerTile(
-                    icon: Icons.receipt_long_outlined,
-                    label: 'Transactions',
+                    icon: Icons.swap_horiz_outlined,
+                    label: 'Forwarding',
                     selected: selectedIndex == 1,
                     onTap: () {
                       Navigator.pop(context);
@@ -117,8 +246,8 @@ class _AppDrawer extends ConsumerWidget {
                     },
                   ),
                   _DrawerTile(
-                    icon: Icons.accessibility_new_outlined,
-                    label: 'Accessibility',
+                    icon: Icons.receipt_long_outlined,
+                    label: 'Transactions',
                     selected: selectedIndex == 2,
                     onTap: () {
                       Navigator.pop(context);
@@ -219,9 +348,9 @@ class _DrawerHeader extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          if (user?.email != null)
+          if (user?.email case final email? when email.isNotEmpty)
             Text(
-              user!.email,
+              email,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onPrimary.withValues(alpha: 0.85),
               ),
@@ -265,8 +394,13 @@ class _DrawerTile extends StatelessWidget {
   }
 }
 
-class _HomeTab extends ConsumerWidget {
-  const _HomeTab();
+/// The forwarding-setup tab: mode, destination, and SIM cards. This is where the
+/// user configures what the on-device forwarder does; the dashboard (Home) shows
+/// the results.
+class _ForwardingTab extends ConsumerWidget {
+  const _ForwardingTab({this.controller});
+
+  final ScrollController? controller;
 
   Future<void> _refresh(WidgetRef ref) async {
     // Pull-to-refresh re-pulls both the backend profile and the on-device
@@ -275,29 +409,32 @@ class _HomeTab extends ConsumerWidget {
       ref.read(customerProfileControllerProvider.notifier).refresh(),
       ref.read(nativeForwardingProvider.notifier).refresh(),
     ];
-    // A pull-to-refresh also acts as a manual "check now": kick off an immediate
-    // on-device USSD balance sweep. It runs in the background service and returns
-    // right away; the native side no-ops if forwarding isn't fully configured, so
-    // an unconfigured pull never dials anything.
+    // A pull-to-refresh also acts as a manual "check now" — but ONLY in
+    // auto-forward mode, which is the mode that dials the *800# balance check.
+    // Check-messages mode never dials *800#: it forwards solely when an 898
+    // balance SMS arrives, so a manual pull must not trigger a balance sweep.
+    // (The native side guards this too; this just avoids starting the service.)
     if (Platform.isAndroid) {
-      futures.add(const ForwardingChannel().sweepNow());
+      final status = ref.read(nativeForwardingProvider).value?.status;
+      if (status?.mode == ForwardingMode.autoForward) {
+        futures.add(const ForwardingChannel().sweepNow());
+      }
     }
     await Future.wait(futures);
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final user = ref.watch(authControllerProvider).value;
-
     return RefreshIndicator(
       onRefresh: () => _refresh(ref),
       child: SingleChildScrollView(
+        controller: controller,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _WelcomeCard(user: user),
+            const PromoSlideshow(),
             const SizedBox(height: 20),
             // The forwarding-mode and SIM sections are on-device (USSD) concerns,
             // so they're Android-only. The destination is a cross-platform
@@ -313,68 +450,6 @@ class _HomeTab extends ConsumerWidget {
             ],
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Gradient hero card greeting the signed-in user.
-class _WelcomeCard extends StatelessWidget {
-  const _WelcomeCard({required this.user});
-
-  final AppUser? user;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final nameParts = user?.fullName.split(' ') ?? const [];
-    final firstName = nameParts.isEmpty ? '' : nameParts.first;
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [theme.colorScheme.primary, theme.colorScheme.tertiary],
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Welcome${firstName.isEmpty ? '' : ', $firstName'}',
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    color: theme.colorScheme.onPrimary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Your Zaad & eDahab USD is forwarded automatically.',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onPrimary.withValues(alpha: 0.9),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          CircleAvatar(
-            radius: 28,
-            backgroundColor: theme.colorScheme.onPrimary,
-            backgroundImage: user?.profilePictureUrl != null
-                ? NetworkImage(user!.profilePictureUrl!)
-                : null,
-            child: user?.profilePictureUrl == null
-                ? Icon(Icons.bolt, color: theme.colorScheme.primary)
-                : null,
-          ),
-        ],
       ),
     );
   }

@@ -16,9 +16,12 @@ import com.moneyexchange.moneyexchange_app.forwarding.ForwardingMethod
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingMode
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingSettings
 import com.moneyexchange.moneyexchange_app.forwarding.SimCards
+import com.moneyexchange.moneyexchange_app.forwarding.TransactionEvents
+import com.moneyexchange.moneyexchange_app.forwarding.TransactionStore
 import com.moneyexchange.moneyexchange_app.forwarding.UssdAccessibilityService
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
 /**
@@ -35,6 +38,23 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private val channelName = "xawil/forwarding"
+    private val eventsChannelName = "xawil/forwarding/events"
+
+    /**
+     * Live sink for the transactions EventChannel: while the dashboard is in the
+     * foreground it's fed every newly recorded [TransactionStore] event so the
+     * "today's forwarded" counter ticks up the instant a forward completes. Held
+     * so the [TransactionEvents] listener can be detached in onCancel.
+     */
+    private var txListener: ((Map<String, Any?>) -> Unit)? = null
+
+    /**
+     * The Flutter result for an in-flight `requestPermissions` call, completed in
+     * [onRequestPermissionsResult] once the user has responded to the native
+     * runtime dialogs. Lets the Dart side await the prompts and then move on to
+     * the accessibility ask.
+     */
+    private var pendingPermissionResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -73,8 +93,16 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "getStatus" -> result.success(status(settings))
+                    "getTransactions" -> result.success(TransactionStore.all(this))
                     "listSims" -> result.success(SimCards.list(this))
                     "requestPermissions" -> {
+                        // Hold the Flutter result until the user has actually
+                        // responded to the native "Allow / Don't allow" dialogs
+                        // (delivered in onRequestPermissionsResult), so the Dart
+                        // side can chain the next step (the accessibility ask)
+                        // AFTER these prompts instead of racing them.
+                        pendingPermissionResult?.success(null) // free any stale one
+                        pendingPermissionResult = result
                         ActivityCompat.requestPermissions(
                             this,
                             arrayOf(
@@ -84,7 +112,6 @@ class MainActivity : FlutterActivity() {
                             ),
                             REQ_PERMISSIONS,
                         )
-                        result.success(null)
                     }
                     "openAccessibilitySettings" -> {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -117,9 +144,63 @@ class MainActivity : FlutterActivity() {
                         ForwardingForegroundService.sweepNow(this)
                         result.success(null)
                     }
+                    "stopForwarding" -> {
+                        // Called on logout / account deletion. Forwarding must NOT keep
+                        // running once the user is signed out, in either mode: flip the
+                        // enabled flag off (so the SMS-driven message-check path and the
+                        // boot receiver both stand down) and tear the poller + its alarm
+                        // down now. On deletion (clear=true) also wipe all stored config
+                        // + encrypted PINs so nothing outlives the account.
+                        val clear = call.argument<Boolean>("clear") ?: false
+                        if (clear) {
+                            settings.clear()
+                            // Account deletion: wipe the on-device ledger too so no
+                            // transaction history outlives the account it belonged to.
+                            TransactionStore.clear(this)
+                        } else {
+                            settings.enabled = false
+                        }
+                        ForwardingForegroundService.stop(this)
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
+
+        // Streams every newly recorded transaction to Dart while the app is alive,
+        // so the dashboard updates live (e.g. today's forwarded total increments
+        // the moment a forward completes) without polling.
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, eventsChannelName)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    val sink = events ?: return
+                    val listener: (Map<String, Any?>) -> Unit = { event -> sink.success(event) }
+                    txListener = listener
+                    TransactionEvents.addListener(listener)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    txListener?.let { TransactionEvents.removeListener(it) }
+                    txListener = null
+                }
+            })
+    }
+
+    /**
+     * Completes the awaiting `requestPermissions` call once the user has answered
+     * the native runtime-permission dialogs. Always calls super first so Flutter
+     * plugins still receive their permission callbacks.
+     */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_PERMISSIONS) {
+            pendingPermissionResult?.success(null)
+            pendingPermissionResult = null
+        }
     }
 
     private fun status(settings: ForwardingSettings): Map<String, Any?> = mapOf(

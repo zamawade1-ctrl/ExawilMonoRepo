@@ -428,12 +428,17 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
           : (status?.destination ?? '—');
       rows.add(_ReadOnlyRow(label: 'Destination mobile number', value: destination));
       if (Platform.isAndroid) {
-        rows.add(
-          _ReadOnlyRow(
-            label: 'Check every',
-            value: '$_intervalMinutes minute${_intervalMinutes == 1 ? '' : 's'}',
-          ),
-        );
+        // The check interval only governs auto-forward mode's timer; in
+        // check-messages mode there is no timer (forwarding fires on the Zaad
+        // balance SMS), so don't show an interval that has no effect.
+        if (status?.mode == ForwardingMode.autoForward) {
+          rows.add(
+            _ReadOnlyRow(
+              label: 'Check every',
+              value: '$_intervalMinutes minute${_intervalMinutes == 1 ? '' : 's'}',
+            ),
+          );
+        }
         if (status?.hasPin ?? false) {
           rows.add(const _ReadOnlyRow(label: 'PIN', value: '•••• saved'));
         }
@@ -494,7 +499,7 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
           if (_method == ForwardingMethod.mobileNumber)
             ..._mobileNumberFields(theme, status)
           else
-            ..._bankAccountFields(theme),
+            ..._bankAccountFields(theme, status),
           const SizedBox(height: 24),
           Row(
             children: [
@@ -632,8 +637,13 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
         ),
       ),
       _showPinToggle(),
-      const SizedBox(height: 8),
-      _checkIntervalField(),
+      // The sweep interval only applies to auto-forward mode's timer. In
+      // check-messages mode there is no timer at all, so hide the control
+      // entirely rather than offer a setting that does nothing.
+      if (status?.mode == ForwardingMode.autoForward) ...[
+        const SizedBox(height: 8),
+        _checkIntervalField(),
+      ],
       if (status?.lastAccountPhone != null) ...[
         const SizedBox(height: 12),
         Row(
@@ -658,8 +668,10 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
     ];
   }
 
-  List<Widget> _bankAccountFields(ThemeData theme) {
+  List<Widget> _bankAccountFields(ThemeData theme, ForwardingStatus? status) {
     final hasSavedPin = widget.initialProfile?.bankAccountPin?.isNotEmpty ?? false;
+    // The interval only governs auto-forward mode's timer (see the mobile form).
+    final isAuto = status?.mode == ForwardingMode.autoForward;
     return [
       TextFormField(
         key: const ValueKey('bankAccountPin'),
@@ -677,15 +689,19 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
             (value == null || value.trim().isEmpty) ? 'Required' : null,
       ),
       _showPinToggle(),
-      const SizedBox(height: 8),
-      _checkIntervalField(),
+      if (isAuto) ...[
+        const SizedBox(height: 8),
+        _checkIntervalField(),
+      ],
       const SizedBox(height: 12),
       _InfoNote(
         theme: theme,
-        text:
-            'The balance sweep dials *800#, then deposits to your bank account by '
-            'entering this PIN on the deposit menu. "Check every" sets how often it '
-            'runs in auto-forward mode.',
+        text: isAuto
+            ? 'The balance sweep dials *800#, then deposits to your bank account by '
+                  'entering this PIN on the deposit menu. "Check every" sets how often it '
+                  'runs in auto-forward mode.'
+            : 'When a Zaad balance message arrives, the app deposits to your bank '
+                  'account by entering this PIN on the *800# deposit menu.',
       ),
     ];
   }

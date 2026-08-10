@@ -4,7 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../features/auth/presentation/auth_providers.dart';
 import '../../features/auth/presentation/sign_in_screen.dart';
-import '../../features/home/presentation/home_shell.dart';
+import '../../features/onboarding/presentation/onboarding_gate.dart';
 import '../../features/info/presentation/about_screen.dart';
 import '../../features/info/presentation/contact_screen.dart';
 import '../../features/info/presentation/privacy_policy_screen.dart';
@@ -46,7 +46,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: AppRoutes.home,
-        builder: (context, state) => const HomeShell(),
+        // HomeGate lands the user straight on HomeShell and, on first launch,
+        // fires the native runtime-permission dialogs (no full-screen setup page).
+        builder: (context, state) => const HomeGate(),
       ),
       GoRoute(
         path: AppRoutes.settings,

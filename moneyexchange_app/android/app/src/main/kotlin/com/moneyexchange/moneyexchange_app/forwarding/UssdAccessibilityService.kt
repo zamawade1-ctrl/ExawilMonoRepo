@@ -138,15 +138,26 @@ class UssdAccessibilityService : AccessibilityService() {
 
     /**
      * Post-PIN screen: if it has an input field it's the balance menu, so type
-     * the balance option; otherwise it's the balance shown directly, so read it.
+     * the balance option; otherwise it MAY be the balance shown directly (some
+     * accounts skip the menu). We only treat a no-input screen as a direct
+     * balance once an amount actually parses off it — a menu that hasn't finished
+     * rendering its input field also momentarily has no editable, and mistaking
+     * that for "balance shown directly" would skip typing the menu option and
+     * hang the cycle. When a balance IS present, advance MENU → BALANCE_RESULT
+     * (so the capture, guarded on that step, takes effect) and read it; otherwise
+     * wait for the next frame (the input field, or the balance, to render).
      */
     private fun handleMenuOrBalance(root: AccessibilityNodeInfo) {
         val input = findEditable(root)
         if (input != null && input.text.isNullOrEmpty()) {
             typeAndSend(root, UssdSession.menuOption) { UssdSession.onMenuOptionTyped() }
-        } else {
-            readBalance(root)
+            return
         }
+        if (input != null) return // input present but already filled: wait it out
+        if (BalanceParser.parse(collectText(root)).balanceUsd == null) return
+        // No input AND a balance is parseable → this account skipped the menu.
+        UssdSession.onMenuBypassedToBalance()
+        readBalance(root)
     }
 
     override fun onInterrupt() {}

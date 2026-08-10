@@ -10,9 +10,10 @@ using MoneyExchange.Api.Services.Otp;
 namespace MoneyExchange.Api.Repositories.Implementations;
 
 /// <summary>
-/// Drives the Telesom OTP login flow: request a code, verify it, issue a JWT.
-/// Actual SMS delivery is delegated to <see cref="ITelesomOtpService"/>, which
-/// is a stub pending the real Telesom API integration.
+/// Drives the scaffolded Telesom OTP flow: request a code, verify it, issue a JWT. SMS delivery
+/// is delegated to <see cref="ITelesomOtpService"/> (stubbed pending the real Telesom API). This
+/// is not on the current login path - username/password sign-in lives in
+/// <see cref="UserAuthRepository"/> - but is kept ready as a future first-login second factor.
 /// </summary>
 public class AuthRepository : IAuthRepository
 {
@@ -99,7 +100,6 @@ public class AuthRepository : IAuthRepository
             await _context.SaveChangesAsync();
 
             var token = _tokenService.CreateToken(customer);
-
             var response = new AuthResponseDto
             {
                 AccessToken = token.AccessToken,
@@ -108,7 +108,6 @@ public class AuthRepository : IAuthRepository
                 FullName = customer.FullName,
                 PhoneNumber = customer.PhoneNumber
             };
-
             return ServiceResponse<AuthResponseDto>.Ok(response, "OTP verified.");
         }
         catch (Exception ex)

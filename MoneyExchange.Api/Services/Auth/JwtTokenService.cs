@@ -17,11 +17,12 @@ public class JwtTokenService : IJwtTokenService
 
     public JwtToken CreateToken(Customer customer) => CreateToken(
         customer.Id.ToString(),
-        [new Claim("phoneNumber", customer.PhoneNumber), new Claim("subjectType", "customer")]);
+        // PhoneNumber is nullable; coalesce to "" since a Claim value can't be null.
+        [new Claim("phoneNumber", customer.PhoneNumber ?? string.Empty), new Claim("subjectType", "customer")]);
 
     public JwtToken CreateToken(User user) => CreateToken(
         user.Id.ToString(),
-        [new Claim("email", user.Email), new Claim("subjectType", "user")]);
+        [new Claim("email", user.Email), new Claim("username", user.Username ?? string.Empty), new Claim("subjectType", "user")]);
 
     private JwtToken CreateToken(string subject, IEnumerable<Claim> extraClaims)
     {
