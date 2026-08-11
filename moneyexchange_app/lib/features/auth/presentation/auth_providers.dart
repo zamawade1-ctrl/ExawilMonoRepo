@@ -5,7 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/api_client.dart';
 import '../../../core/storage/session_storage.dart';
+import '../../customer/presentation/customer_providers.dart';
+import '../../dashboard/presentation/dashboard_providers.dart';
 import '../../forwarding/data/forwarding_channel.dart';
+import '../../forwarding/presentation/forwarding_providers.dart';
 import '../data/auth_api.dart';
 import '../data/auth_repository.dart';
 import '../domain/app_user.dart';
@@ -46,8 +49,34 @@ final authControllerProvider = AsyncNotifierProvider<AuthController, AppUser?>(
 
 class AuthController extends AsyncNotifier<AppUser?> {
   @override
-  Future<AppUser?> build() {
-    return ref.read(authRepositoryProvider).restoreSession();
+  Future<AppUser?> build() async {
+    final user = await ref.read(authRepositoryProvider).restoreSession();
+    // Point the native on-device stores at this user's namespace BEFORE the
+    // home providers first read them, so a restored session shows its own data.
+    // No invalidate needed here — those providers haven't been read yet.
+    await _applyActiveUser(user?.id, invalidate: false);
+    return user;
+  }
+
+  /// Tells the native side which user owns the on-device data (settings, PINs,
+  /// ledger) so each user's data is separate + persistent, then (when
+  /// [invalidate]) re-reads the per-user providers so the UI swaps to that user's
+  /// data. Android-only + best-effort — a native hiccup must never block auth.
+  Future<void> _applyActiveUser(int? userId, {bool invalidate = true}) async {
+    if (Platform.isAndroid) {
+      try {
+        await const ForwardingChannel().setActiveUser(userId);
+      } on PlatformException {
+        // Ignore — auth must still proceed.
+      } on MissingPluginException {
+        // Ignore — channel unavailable (e.g. tests).
+      }
+    }
+    if (invalidate) {
+      ref.invalidate(nativeForwardingProvider);
+      ref.invalidate(deviceLedgerProvider);
+      ref.invalidate(customerProfileControllerProvider);
+    }
   }
 
   /// Signs up. On success the state becomes the new [AppUser]; on failure it's

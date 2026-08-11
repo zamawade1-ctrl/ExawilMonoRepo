@@ -7,7 +7,9 @@ enum ForwardingMethod {
   static ForwardingMethod fromWire(int value) => ForwardingMethod.values[value];
 }
 
-/// The signed-in user's forwarding profile: where auto-forwarded USD should go.
+/// The signed-in user's forwarding profile. For security the forwarding
+/// destination and PINs are NEVER stored in the backend — they live only in the
+/// device's on-device store — so this carries just the identity + chosen method.
 class CustomerProfile {
   const CustomerProfile({
     required this.id,
@@ -15,10 +17,6 @@ class CustomerProfile {
     required this.phoneNumber,
     required this.forwardingMethod,
     required this.isVerified,
-    this.forwardingPhoneNumber,
-    this.bankName,
-    this.bankAccountNumber,
-    this.bankAccountHolderName,
   });
 
   factory CustomerProfile.fromJson(Map<String, dynamic> json) => CustomerProfile(
@@ -27,10 +25,6 @@ class CustomerProfile {
     phoneNumber: json['phoneNumber'] as String? ?? '',
     forwardingMethod: ForwardingMethod.fromWire(json['forwardingMethod'] as int),
     isVerified: json['isVerified'] as bool? ?? false,
-    forwardingPhoneNumber: json['forwardingPhoneNumber'] as String?,
-    bankName: json['bankName'] as String?,
-    bankAccountNumber: json['bankAccountNumber'] as String?,
-    bankAccountHolderName: json['bankAccountHolderName'] as String?,
   );
 
   final int id;
@@ -38,28 +32,15 @@ class CustomerProfile {
   final String phoneNumber;
   final ForwardingMethod forwardingMethod;
   final bool isVerified;
-  final String? forwardingPhoneNumber;
-  final String? bankName;
-  final String? bankAccountNumber;
-  final String? bankAccountHolderName;
-
-  /// Bank forwarding is now a single PIN rather than name/number/holder. Stored
-  /// in the backend's `bankAccountNumber` column (repurposed - avoids a schema
-  /// migration for a still-unused rail). Unlike the on-device Keystore mobile
-  /// PINs, this is returned by the backend, so it can be pre-filled on edit.
-  String? get bankAccountPin => bankAccountNumber;
 }
 
-/// What the form submits to PUT /api/customers/me.
+/// What the form submits to PUT /api/customers/me. The destination + PINs are
+/// intentionally NOT part of this payload — they're saved on-device only.
 class ForwardingProfileInput {
   const ForwardingProfileInput({
     required this.fullName,
     this.phoneNumber,
     required this.forwardingMethod,
-    this.forwardingPhoneNumber,
-    this.bankName,
-    this.bankAccountNumber,
-    this.bankAccountHolderName,
   });
 
   final String fullName;
@@ -68,18 +49,10 @@ class ForwardingProfileInput {
   /// *800# balance screen, so the form no longer collects it. Preserved on edit.
   final String? phoneNumber;
   final ForwardingMethod forwardingMethod;
-  final String? forwardingPhoneNumber;
-  final String? bankName;
-  final String? bankAccountNumber;
-  final String? bankAccountHolderName;
 
   Map<String, dynamic> toJson() => {
     'fullName': fullName,
     'phoneNumber': phoneNumber,
     'forwardingMethod': forwardingMethod.index,
-    'forwardingPhoneNumber': forwardingPhoneNumber,
-    'bankName': bankName,
-    'bankAccountNumber': bankAccountNumber,
-    'bankAccountHolderName': bankAccountHolderName,
   };
 }

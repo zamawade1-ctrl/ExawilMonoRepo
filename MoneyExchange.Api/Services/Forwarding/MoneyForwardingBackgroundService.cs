@@ -101,12 +101,7 @@ public class MoneyForwardingBackgroundService : BackgroundService
                 {
                     transaction.CustomerId = customer.Id;
 
-                    var destination = new ForwardDestination(
-                        customer.ForwardingMethod,
-                        customer.ForwardingPhoneNumber,
-                        customer.BankName,
-                        customer.BankAccountNumber,
-                        customer.BankAccountHolderName);
+                    var destination = new ForwardDestination(customer.ForwardingMethod);
 
                     var result = await forwardingService.ForwardAsync(destination, receipt.AmountUsd, cancellationToken);
 

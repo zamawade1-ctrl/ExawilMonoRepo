@@ -84,30 +84,18 @@ class _DestinationBanner extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final profile = ref.watch(customerProfileControllerProvider).value;
+    // The destination + PINs are on-device only (never the backend), so the
+    // banner reads them from the native status.
     final nativeStatus = ref.watch(nativeForwardingProvider).value?.status;
 
     IconData icon = Icons.info_outline;
     var tone = SectionBannerTone.neutral;
     var text = 'No destination set yet. Choose one below and save.';
 
-    if (profile != null &&
-        profile.forwardingMethod == ForwardingMethod.mobileNumber &&
-        (profile.forwardingPhoneNumber?.isNotEmpty ?? false)) {
-      icon = Icons.check_circle;
-      tone = SectionBannerTone.active;
-      text = 'Forwarding to mobile number ${profile.forwardingPhoneNumber}.';
-    } else if (profile != null &&
-        profile.forwardingMethod == ForwardingMethod.bankAccount &&
-        (profile.bankAccountPin?.isNotEmpty ?? false)) {
-      icon = Icons.check_circle;
-      tone = SectionBannerTone.active;
-      // Never surface the PIN itself in the always-visible banner.
-      text = 'Forwarding to your bank account.';
-    } else if (nativeStatus != null &&
+    if (nativeStatus != null &&
         nativeStatus.isBankMethod &&
         nativeStatus.hasBankPin) {
-      // Native (on-device) bank destination, no backend profile needed.
+      // Native (on-device) bank destination.
       icon = Icons.check_circle;
       tone = SectionBannerTone.active;
       text = 'Forwarding to your bank account.';
@@ -173,22 +161,12 @@ class _DestinationForm extends ConsumerStatefulWidget {
 class _DestinationFormState extends ConsumerState<_DestinationForm> {
   final _formKey = GlobalKey<FormState>();
 
-  // Shared between the backend profile's `forwardingPhoneNumber` and the native
-  // sweep's `destination` - they're the same number.
-  late final _destinationController = TextEditingController(
-    text: widget.initialProfile?.forwardingPhoneNumber ?? '',
-  );
-  // The mobile PINs live in the Android Keystore and are write-only from here
-  // (the native side only reports whether one is stored, never its value), so
-  // these start empty on edit - "leave blank to keep the saved one".
+  // Destination + all PINs are on-device only now, so every field starts empty
+  // and is seeded from the native status (see [_seedFromNative]).
+  final _destinationController = TextEditingController();
   final _pinController = TextEditingController();
   final _secondaryPinController = TextEditingController();
-  // Bank forwarding collapsed to a single PIN. It's stored in the backend
-  // profile (see CustomerProfile.bankAccountPin), so unlike the mobile PINs it
-  // can be read back and pre-filled here.
-  late final _bankPinController = TextEditingController(
-    text: widget.initialProfile?.bankAccountPin ?? '',
-  );
+  final _bankPinController = TextEditingController();
 
   late ForwardingMethod _method =
       widget.initialProfile?.forwardingMethod ?? ForwardingMethod.mobileNumber;
@@ -221,27 +199,17 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
   }
 
   /// Whether a destination is already set up (so the card should open in the
-  /// read-only view). True when the backend profile has a mobile number or a
-  /// bank PIN, or the native side has a saved destination.
+  /// read-only view). The destination + PINs live on-device now, so this is based
+  /// solely on the native side (the source of truth on Android), matched to the
+  /// saved method so a leftover value for the other method doesn't count.
   bool _hasSavedDestination(ForwardingStatus? status) {
-    final p = widget.initialProfile;
-    final mobileSaved =
-        p != null &&
-        p.forwardingMethod == ForwardingMethod.mobileNumber &&
-        (p.forwardingPhoneNumber?.isNotEmpty ?? false);
-    final bankSaved =
-        p != null &&
-        p.forwardingMethod == ForwardingMethod.bankAccount &&
-        (p.bankAccountPin?.isNotEmpty ?? false);
-    // Native-side saved destinations (the source of truth on Android), matched to
-    // the saved method so a leftover value for the other method doesn't count.
     final nativeMobileSaved =
         status != null &&
         !status.isBankMethod &&
         (status.destination?.isNotEmpty ?? false);
     final nativeBankSaved =
         status != null && status.isBankMethod && status.hasBankPin;
-    return mobileSaved || bankSaved || nativeMobileSaved || nativeBankSaved;
+    return nativeMobileSaved || nativeBankSaved;
   }
 
   /// Seeds the sweep interval, the destination field, and the primary/secondary
@@ -277,9 +245,8 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
   }
 
   void _cancelEdit() {
-    // Revert every field to its saved value. The backend profile wins when
-    // present; otherwise (the norm on Android) fall back to the native side,
-    // which is the real source of truth for method / destination / all PINs.
+    // Revert every field to the native side's saved value — the real (and only)
+    // source of truth for method / destination / all PINs.
     final status = ref.read(nativeForwardingProvider).value?.status;
     final nativeMethod = status != null
         ? ForwardingMethod.fromWire(status.forwardingMethod)
@@ -287,13 +254,9 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
     setState(() {
       _editing = false;
       _showPin = false;
-      _method = widget.initialProfile?.forwardingMethod ?? nativeMethod;
-      _destinationController.text =
-          widget.initialProfile?.forwardingPhoneNumber ??
-          status?.destination ??
-          '';
-      _bankPinController.text =
-          widget.initialProfile?.bankAccountPin ?? status?.bankPin ?? '';
+      _method = nativeMethod;
+      _destinationController.text = status?.destination ?? '';
+      _bankPinController.text = status?.bankPin ?? '';
       _pinController.text = status?.pin ?? '';
       _secondaryPinController.text = status?.secondaryPin ?? '';
     });
@@ -302,8 +265,6 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
   /// Assembles the backend profile payload from the current form values. Used
   /// for the (best-effort on Android) backend sync and the iOS backend save.
   ForwardingProfileInput _buildInput() {
-    final isMobile = _method == ForwardingMethod.mobileNumber;
-    final destination = _destinationController.text.trim();
     // Full name comes from the signed-in Google identity (the backend still
     // requires it); this card no longer asks for it.
     final authName = ref.read(authControllerProvider).value?.fullName.trim() ?? '';
@@ -311,18 +272,14 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
         ? authName
         : (widget.initialProfile?.fullName ?? 'e-Xawil user');
 
+    // The destination + PINs are saved on-device only and never sent to the
+    // backend, so the backend payload carries just identity + the chosen method.
     return ForwardingProfileInput(
       fullName: fullName,
       // The account's own number is read on-device from the *800# balance
       // screen, so it isn't collected here. Preserve any existing value.
       phoneNumber: widget.initialProfile?.phoneNumber,
       forwardingMethod: _method,
-      forwardingPhoneNumber: isMobile ? destination : null,
-      // Bank forwarding is a single PIN now, stored in `bankAccountNumber`;
-      // the old bank name / holder fields are no longer collected.
-      bankName: null,
-      bankAccountNumber: isMobile ? null : _bankPinController.text.trim(),
-      bankAccountHolderName: null,
     );
   }
 
@@ -418,14 +375,12 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
   // --- Read-only view (a destination is saved and we're not editing) ---------
 
   Widget _buildReadOnly(ThemeData theme, ForwardingStatus? status) {
-    final profile = widget.initialProfile;
     final isMobile = _method == ForwardingMethod.mobileNumber;
 
     final rows = <Widget>[];
     if (isMobile) {
-      final destination = (profile?.forwardingPhoneNumber?.isNotEmpty ?? false)
-          ? profile!.forwardingPhoneNumber!
-          : (status?.destination ?? '—');
+      // Destination comes from the on-device store only.
+      final destination = status?.destination ?? '—';
       rows.add(_ReadOnlyRow(label: 'Destination mobile number', value: destination));
       if (Platform.isAndroid) {
         // The check interval only governs auto-forward mode's timer; in
@@ -669,7 +624,8 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
   }
 
   List<Widget> _bankAccountFields(ThemeData theme, ForwardingStatus? status) {
-    final hasSavedPin = widget.initialProfile?.bankAccountPin?.isNotEmpty ?? false;
+    // The bank PIN lives on-device now, so "saved" is the native flag.
+    final hasSavedPin = status?.hasBankPin ?? false;
     // The interval only governs auto-forward mode's timer (see the mobile form).
     final isAuto = status?.mode == ForwardingMode.autoForward;
     return [

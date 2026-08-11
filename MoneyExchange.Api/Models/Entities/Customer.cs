@@ -34,20 +34,13 @@ public class Customer
     [MaxLength(20)]
     public string? PhoneNumber { get; set; }
 
+    /// <summary>
+    /// Which rail auto-forwarded money takes (mobile number vs bank account). The
+    /// destination itself and the PINs are NOT stored server-side for security —
+    /// they live only in the device's on-device store (Android SharedPreferences +
+    /// Keystore). This just records the chosen method for management/display.
+    /// </summary>
     public ForwardingMethod ForwardingMethod { get; set; }
-
-    /// <summary>Destination mobile number when <see cref="ForwardingMethod"/> is MobileNumber.</summary>
-    [MaxLength(20)]
-    public string? ForwardingPhoneNumber { get; set; }
-
-    [MaxLength(120)]
-    public string? BankName { get; set; }
-
-    [MaxLength(60)]
-    public string? BankAccountNumber { get; set; }
-
-    [MaxLength(120)]
-    public string? BankAccountHolderName { get; set; }
 
     /// <summary>
     /// True once the customer is eligible for auto-forwarding. Normally set by completing

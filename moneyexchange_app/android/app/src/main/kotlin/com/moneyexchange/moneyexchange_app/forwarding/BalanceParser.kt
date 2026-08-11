@@ -96,6 +96,16 @@ object BalanceParser {
     }
 
     /**
+     * The **last** balance amount in [text] — used to read the *leftover* balance
+     * off the "…Your Balance is $X." result dialog shown after a forward completes.
+     * Takes the last match (not the first) so that if a couple of confirmations
+     * briefly stack in one dialog, we report the most recent remaining balance.
+     */
+    fun lastBalanceUsd(text: String): Double? =
+        BALANCE_PHRASE.findAll(text).lastOrNull()?.groupValues?.get(1)
+            ?.replace(",", "")?.toDoubleOrNull()
+
+    /**
      * The USD amount received, or null if the text isn't a "$X received" message.
      * Used only as a fallback when [extractBalance] finds no balance clause. See
      * [RECEIVED_USD] for the safety contract (callers must exclude outgoing first).

@@ -56,8 +56,11 @@ enum class ForwardingMethod {
  */
 class ForwardingSettings(context: Context) {
 
+    // Per-user: each signed-in user has their own forwarding config + encrypted
+    // PINs, keyed by the active user's namespace (see [SessionStore]). Switching
+    // users switches which file this reads/writes; signed out uses "anon".
     private val prefs = context.applicationContext
-        .getSharedPreferences("xawil_forwarding", Context.MODE_PRIVATE)
+        .getSharedPreferences("xawil_forwarding_${SessionStore.namespace(context)}", Context.MODE_PRIVATE)
 
     var destination: String?
         get() = prefs.getString(KEY_DESTINATION, null)
@@ -124,6 +127,21 @@ class ForwardingSettings(context: Context) {
         set(value) = prefs.edit().putString(KEY_LAST_PHONE, value).apply()
 
     /**
+     * The **leftover balance** remaining on the account after the most recent
+     * forward — read off the "…Your Balance is $X." result dialog by the
+     * accessibility service. Stored as a string to keep full precision; the UI
+     * shows it in the sweep card. Null until the first forward completes.
+     */
+    var lastLeftoverBalance: Double?
+        get() = prefs.getString(KEY_LAST_BALANCE, null)?.toDoubleOrNull()
+        set(value) = prefs.edit().putString(KEY_LAST_BALANCE, value?.toString()).apply()
+
+    /** Wall-clock millis when [lastLeftoverBalance] was captured; 0 if never. */
+    var lastLeftoverAtMs: Long
+        get() = prefs.getLong(KEY_LAST_BALANCE_AT, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_BALANCE_AT, value).apply()
+
+    /**
      * True only when we have everything needed to run a full sweep + forward.
      * Requirements differ by method: mobile needs a destination + both PINs
      * (the secondary PIN rides inside `*806#`); bank needs only the account [pin]
@@ -175,6 +193,8 @@ class ForwardingSettings(context: Context) {
         private const val KEY_SECONDARY_PIN_ENC = "secondary_pin_enc"
         private const val KEY_BANK_PIN_ENC = "bank_pin_enc"
         private const val KEY_LAST_PHONE = "last_account_phone"
+        private const val KEY_LAST_BALANCE = "last_leftover_balance"
+        private const val KEY_LAST_BALANCE_AT = "last_leftover_balance_at"
         private const val KEY_FORWARDED_REFS = "forwarded_refs"
         private const val DEFAULT_INTERVAL = 1
 

@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -34,8 +33,6 @@ class HomeShell extends ConsumerStatefulWidget {
 
 class _HomeShellState extends ConsumerState<HomeShell> {
   int _selectedIndex = 0;
-
-  static const _titles = ['Dashboard', 'Forwarding', 'Transactions'];
 
   /// One scroll controller per tab so re-tapping the current tab can scroll it
   /// back to the top (the Facebook-style "tap the active nav icon" gesture).
@@ -89,12 +86,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: _AppBarTitle(title: _titles[_selectedIndex]),
-        // The manual balance-sweep trigger lives here now (was the Accessibility
-        // tab). Android-only, like the on-device forwarder itself.
-        actions: [
-          if (Platform.isAndroid) const _SweepNowAction(),
-        ],
+        title: const _AppBarTitle(title: AppInfo.appName),
       ),
       drawer: _AppDrawer(
         selectedIndex: _selectedIndex,
@@ -129,36 +121,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// App-bar action that kicks off one balance-sweep cycle on demand (dial *800#,
-/// read balance, forward if ≥ $1) without waiting for the next timer tick.
-/// Moved here from the old Accessibility tab; Android-only.
-class _SweepNowAction extends StatelessWidget {
-  const _SweepNowAction();
-
-  Future<void> _run(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      await const ForwardingChannel().sweepNow();
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Balance sweep started')),
-      );
-    } on PlatformException {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Could not start the sweep')),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      tooltip: 'Run a sweep now',
-      icon: const Icon(Icons.science_outlined),
-      onPressed: () => _run(context),
     );
   }
 }

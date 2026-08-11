@@ -11,10 +11,12 @@ import android.text.TextUtils
 import androidx.annotation.NonNull
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.moneyexchange.moneyexchange_app.forwarding.BalanceEvents
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingForegroundService
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingMethod
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingMode
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingSettings
+import com.moneyexchange.moneyexchange_app.forwarding.SessionStore
 import com.moneyexchange.moneyexchange_app.forwarding.SimCards
 import com.moneyexchange.moneyexchange_app.forwarding.TransactionEvents
 import com.moneyexchange.moneyexchange_app.forwarding.TransactionStore
@@ -39,6 +41,7 @@ class MainActivity : FlutterActivity() {
 
     private val channelName = "xawil/forwarding"
     private val eventsChannelName = "xawil/forwarding/events"
+    private val balanceChannelName = "xawil/forwarding/balance"
 
     /**
      * Live sink for the transactions EventChannel: while the dashboard is in the
@@ -47,6 +50,14 @@ class MainActivity : FlutterActivity() {
      * so the [TransactionEvents] listener can be detached in onCancel.
      */
     private var txListener: ((Map<String, Any?>) -> Unit)? = null
+
+    /**
+     * Live sink for the leftover-balance EventChannel: fed the account's remaining
+     * balance the instant the accessibility service reads it off a completed
+     * forward's result dialog, so the forwarding-mode card's readout updates without
+     * a refresh. Held so the [BalanceEvents] listener can be detached in onCancel.
+     */
+    private var balanceListener: ((Double) -> Unit)? = null
 
     /**
      * The Flutter result for an in-flight `requestPermissions` call, completed in
@@ -144,6 +155,28 @@ class MainActivity : FlutterActivity() {
                         ForwardingForegroundService.sweepNow(this)
                         result.success(null)
                     }
+                    "checkBalance" -> {
+                        // Check-messages refresh: read the balance via *800# (updates
+                        // the leftover readout live) WITHOUT forwarding.
+                        ForwardingForegroundService.checkBalance(this)
+                        result.success(null)
+                    }
+                    "setActiveUser" -> {
+                        // Switch which user's namespaced on-device data (settings,
+                        // PINs, ledger) is active. Called by the app on login /
+                        // session-restore (userId set) and logout (userId null), so
+                        // each user gets their own persistent data. Then re-evaluate
+                        // the forwarder for the now-active user.
+                        val userId = call.argument<Int>("userId")
+                        SessionStore.setActiveUserId(this, userId?.toString())
+                        val userSettings = ForwardingSettings(this) // reads new namespace
+                        if (userSettings.enabled && userSettings.isReady()) {
+                            ForwardingForegroundService.start(this)
+                        } else {
+                            ForwardingForegroundService.stop(this)
+                        }
+                        result.success(null)
+                    }
                     "stopForwarding" -> {
                         // Called on logout / account deletion. Forwarding must NOT keep
                         // running once the user is signed out, in either mode: flip the
@@ -182,6 +215,23 @@ class MainActivity : FlutterActivity() {
                 override fun onCancel(arguments: Any?) {
                     txListener?.let { TransactionEvents.removeListener(it) }
                     txListener = null
+                }
+            })
+
+        // Streams the leftover balance to Dart the instant a forward's result dialog
+        // is read, so the forwarding-mode card's readout is real-time (no refresh).
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, balanceChannelName)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    val sink = events ?: return
+                    val listener: (Double) -> Unit = { balance -> sink.success(balance) }
+                    balanceListener = listener
+                    BalanceEvents.addListener(listener)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    balanceListener?.let { BalanceEvents.removeListener(it) }
+                    balanceListener = null
                 }
             })
     }
@@ -230,6 +280,9 @@ class MainActivity : FlutterActivity() {
         "simSubscriptionId" to settings.simSubscriptionId,
         "mode" to settings.mode.ordinal,
         "lastAccountPhone" to settings.lastAccountPhone,
+        // Leftover balance read off the last forward's result dialog, for the sweep card.
+        "lastLeftoverBalance" to settings.lastLeftoverBalance,
+        "lastLeftoverAtMs" to settings.lastLeftoverAtMs,
     )
 
     private fun granted(permission: String): Boolean =

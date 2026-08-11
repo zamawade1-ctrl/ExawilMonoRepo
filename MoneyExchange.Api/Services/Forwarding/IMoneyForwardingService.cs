@@ -2,13 +2,13 @@ using MoneyExchange.Api.Models.Entities;
 
 namespace MoneyExchange.Api.Services.Forwarding;
 
-/// <summary>Where a received USD amount should be pushed: a mobile number (via USSD) or a bank account.</summary>
-public record ForwardDestination(
-    ForwardingMethod Method,
-    string? PhoneNumber,
-    string? BankName,
-    string? BankAccountNumber,
-    string? BankAccountHolderName);
+/// <summary>
+/// Which rail a received USD amount should be pushed out on. The concrete
+/// destination (mobile number / bank account) and PINs are NOT stored server-side
+/// — they live only on the device — so this server-side fallback carries the
+/// method alone.
+/// </summary>
+public record ForwardDestination(ForwardingMethod Method);
 
 public record ForwardResult(bool Success, string Note);
 

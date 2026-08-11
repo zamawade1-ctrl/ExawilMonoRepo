@@ -2,6 +2,8 @@ package com.moneyexchange.moneyexchange_app.forwarding
 
 import android.accessibilityservice.AccessibilityService
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -38,9 +40,51 @@ class UssdAccessibilityService : AccessibilityService() {
     private var closeAttempts = 0
     private var lastCloseAtMs = 0L
 
+    /** Throttle for the leftover-dialog janitor (see [dismissLeftoverResultDialog]). */
+    private var lastJanitorCloseMs = 0L
+
+    /** Janitor dismiss attempts on the current dialog; reset once it's gone. Gates BACK. */
+    private var janitorAttempts = 0
+
+    /** Guards [closeResultDialog] so the leftover balance is captured once per step. */
+    private var leftoverCaptured = false
+
+    /** Posts the proactive pre-dial cleanup onto the a11y main thread. */
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+    }
+
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        if (instance === this) instance = null
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        super.onDestroy()
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (!UssdSession.isActive()) return
         val root = rootInActiveWindow ?: return
+
+        // Only ever read/act on the system USSD dialog — never our own app UI.
+        // Our card text contains "$1 or more", which the balance parser would
+        // otherwise misread as a $1 balance and forward against.
+        if (root.packageName == packageName) return
+
+        // No cycle in flight: sweep away any leftover terminal forwarding result
+        // dialog (a "you sent…" / "successfully transferred…" screen) that lingered
+        // after a finished cycle, arrived late, or is stacking up across cycles.
+        // Left on screen it both looks stuck AND blocks/confuses the next *800# / *806#
+        // dial — the reported "stacked success dialog → forwarding failures" bug.
+        // Tightly scoped: only a no-input screen whose text we recognise as ours.
+        if (!UssdSession.isActive()) {
+            dismissLeftoverResultDialog(root)
+            return
+        }
 
         // Reset the dialog-close retry counters the moment we enter a new step, so
         // each terminal screen gets a fresh retry budget.
@@ -48,12 +92,21 @@ class UssdAccessibilityService : AccessibilityService() {
             closeStepAnchor = UssdSession.step
             closeAttempts = 0
             lastCloseAtMs = 0L
+            leftoverCaptured = false
         }
 
-        // Only ever read/act on the system USSD dialog — never our own app UI.
-        // Our card text contains "$1 or more", which the balance parser would
-        // otherwise misread as a $1 balance and forward against.
-        if (root.packageName == packageName) return
+        // The dial was rejected: the system shows "Connection problem or invalid MMI
+        // code." No input field, so no step handler can act — dismiss it and flag the
+        // session so [UssdDialer] re-dials rather than letting the forward silently
+        // fail. Checked before the step handlers because it can appear at ANY dial.
+        if (isMmiErrorDialog(collectText(root))) {
+            // Tap OK only (no BACK) — the error dialog is a standard AlertDialog whose
+            // OK reliably dismisses it, and BACK here could close our app behind it.
+            dismissDialog(root, allowBack = false)
+            UssdSession.signalMmiError()
+            Log.w(TAG, "MMI-error dialog dismissed; flagged for re-dial (step=${UssdSession.step}).")
+            return
+        }
 
         logScreen(root)
 
@@ -83,7 +136,7 @@ class UssdAccessibilityService : AccessibilityService() {
                 // BACK across frames until the dialog is actually gone before marking
                 // the cycle complete so the poller can wrap up.
                 UssdSession.Step.SEND_PIN_DONE ->
-                    closeResultDialog(root) { UssdSession.onSendResultClosed() }
+                    closeResultDialog(root, captureLeftover = true) { UssdSession.onSendResultClosed() }
 
                 // Bank-account forwarding: one typed dialog per step. Each types its
                 // value, taps Send, and advances the session; typeAndSend's empty-input
@@ -118,7 +171,7 @@ class UssdAccessibilityService : AccessibilityService() {
                         UssdSession.advanceBank(UssdSession.Step.BANK_CONFIRM, UssdSession.Step.BANK_CONFIRM_DONE)
                     }
                 UssdSession.Step.BANK_CONFIRM_DONE ->
-                    closeResultDialog(root) { UssdSession.onBankResultClosed() }
+                    closeResultDialog(root, captureLeftover = true) { UssdSession.onBankResultClosed() }
 
                 else -> {}
             }
@@ -197,8 +250,25 @@ class UssdAccessibilityService : AccessibilityService() {
         if (result.balanceUsd == null) return
 
         Log.i(TAG, "Balance screen parsed: ${result.reason}")
-        UssdSession.onBalanceRead(result.balanceUsd, result.phoneNumber)
+        // True only on the frame that actually captures (onBalanceRead advances the
+        // step), so the leftover persist/emit below runs exactly once per read.
+        val wasResult = UssdSession.step == UssdSession.Step.BALANCE_RESULT
+        val balance = result.balanceUsd
+        UssdSession.onBalanceRead(balance, result.phoneNumber)
         result.phoneNumber?.let { ForwardingSettings(this).lastAccountPhone = it }
+        // The *800# balance IS the account's current (leftover) balance. Persist +
+        // push it live so a Run sweep updates the leftover readout the same way a
+        // completed forward does — including when the balance is below the forward
+        // threshold and no send (hence no result dialog) follows. If the sweep does
+        // go on to forward, the post-forward result dialog re-captures the true
+        // remaining balance afterwards (see closeResultDialog).
+        if (wasResult && balance != null) {
+            ForwardingSettings(this).apply {
+                lastLeftoverBalance = balance
+                lastLeftoverAtMs = System.currentTimeMillis()
+            }
+            BalanceEvents.emit(balance)
+        }
         // The session is now BALANCE_CLOSING; the leftover balance/menu dialog is
         // closed (with retries) by the BALANCE_CLOSING handler, before the poller
         // dials *806#, so a lingering dialog can't block the fresh send call.
@@ -219,18 +289,40 @@ class UssdAccessibilityService : AccessibilityService() {
      *  - It only ever acts when the screen has NO input field. An interactive
      *    screen (PIN prompt, menu, send confirmation) is left completely untouched,
      *    so it can never tap "Cancel"/BACK on a pending transfer.
-     *  - It presses BACK only while a dismiss button (OK/close) is actually
-     *    present, proving this is a finished result screen — never a transient
-     *    "USSD code running…" frame — so an in-flight send can't be cancelled.
-     *  - BACK is used rather than ACTION_CLICK on the OK button because Samsung's
-     *    system USSD dialog ignores an accessibility click on it (reports success
-     *    yet the dialog stays), whereas BACK reliably dismisses the system dialog.
+     *  - It dismisses only while a dismiss button (OK/close) is actually present,
+     *    proving this is a finished result screen — never a transient "USSD code
+     *    running…" frame — so an in-flight send can't be cancelled.
+     *  - It taps the OK button first and only falls back to BACK on a retry, once an
+     *    OK tap has provably left the dialog up ([dismissDialog]). A speculative BACK
+     *    alongside a successful OK tap would fall through to the app behind the dialog
+     *    and could close our own app — so BACK is never pressed on the first attempt.
      */
-    private fun closeResultDialog(root: AccessibilityNodeInfo, onClosed: () -> Unit) {
+    private fun closeResultDialog(
+        root: AccessibilityNodeInfo,
+        captureLeftover: Boolean = false,
+        onClosed: () -> Unit,
+    ) {
         // Interactive screen (PIN / menu / confirmation): never touch it.
         if (findEditable(root) != null) return
 
-        val hasDismiss = findButton(root, DISMISS_LABELS) != null
+        val hasDismiss = findLabeled(root, DISMISS_LABELS) != null
+
+        // Terminal result screen for a completed forward: read the LEFTOVER balance
+        // off "…Your Balance is $X." before we dismiss it, for the sweep card's
+        // readout. Once per step; never gates the close.
+        if (hasDismiss && captureLeftover && !leftoverCaptured) {
+            BalanceParser.lastBalanceUsd(collectText(root))?.let { leftover ->
+                leftoverCaptured = true
+                ForwardingSettings(this).apply {
+                    lastLeftoverBalance = leftover
+                    lastLeftoverAtMs = System.currentTimeMillis()
+                }
+                // Push it live to the UI so the sweep card updates without a refresh.
+                BalanceEvents.emit(leftover)
+                Log.i(TAG, "Captured leftover balance \$$leftover from the result dialog.")
+            }
+        }
+
         if (!hasDismiss) {
             // No dismiss button on a non-input screen. If we've already pressed BACK
             // at least once, the terminal dialog is gone — the cycle is done. If we
@@ -242,15 +334,19 @@ class UssdAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Terminal result screen is still showing. Press BACK, throttled so we don't
-        // spam it faster than the system can animate the dialog away, and keep
-        // retrying on later frames until the dismiss button disappears above.
+        // Terminal result screen is still showing. Dismiss it (tap OK + BACK),
+        // throttled so we don't spam faster than the system can animate the dialog
+        // away, and keep retrying on later frames until the dismiss button
+        // disappears above.
         val now = SystemClock.elapsedRealtime()
         if (now - lastCloseAtMs < CLOSE_RETRY_GAP_MS) return
-        performGlobalAction(GLOBAL_ACTION_BACK)
+        // First attempt taps OK only; BACK is allowed only from the 2nd attempt on,
+        // i.e. once an OK tap has provably failed to remove the dialog — so a stray
+        // BACK can never fall through and close our own app.
+        dismissDialog(root, allowBack = closeAttempts > 0)
         lastCloseAtMs = now
         closeAttempts++
-        Log.i(TAG, "Pressed BACK to close the result dialog (attempt $closeAttempts).")
+        Log.i(TAG, "Dismissed the result dialog (attempt $closeAttempts).")
 
         // Backstop: if repeated presses never clear it, stop trying and let the
         // poller wrap up rather than looping forever on a stuck screen.
@@ -258,6 +354,103 @@ class UssdAccessibilityService : AccessibilityService() {
             Log.w(TAG, "Result dialog still up after $MAX_CLOSE_ATTEMPTS attempts; giving up the close.")
             onClosed()
         }
+    }
+
+    /**
+     * Janitor for when NO cycle is active: dismisses a leftover terminal
+     * forwarding-result dialog that lingered after a finished cycle, arrived late
+     * (the USSD round-trip finished after we'd already stood the cycle down), or is
+     * stacking up because an earlier close was ignored by the ROM. This is the fix
+     * for the "successful-forward dialog stays stacked and causes forwarding
+     * failures" bug: a lingering system dialog blocks/garbles the next *800# / *806#
+     * dial, so we proactively clear it whenever it's on screen and unowned.
+     *
+     * Safety — this runs outside our own state machine, so it is deliberately narrow:
+     *  - NEVER acts on a screen with an input field (an editable = a pending
+     *    interactive PIN/transfer/menu — could be the user's own USSD session).
+     *  - Only ever a screen whose text we recognise as a Zaad/bank money RESULT
+     *    ([isForwardingResultDialog]) AND that carries a dismiss (OK) button, so an
+     *    unrelated app dialog is never touched.
+     */
+    private fun dismissLeftoverResultDialog(root: AccessibilityNodeInfo) {
+        // Not one of our dialogs (or it's gone): reset the retry budget so the next
+        // real dialog starts fresh with an OK-only tap (no speculative BACK).
+        if (findEditable(root) != null) { janitorAttempts = 0; return }
+        if (findLabeled(root, DISMISS_LABELS) == null) { janitorAttempts = 0; return }
+        val text = collectText(root)
+        // Also clear a lingering "Connection problem or invalid MMI code" error dialog:
+        // like a result dialog, a stuck error dialog blocks the next dial.
+        if (!isForwardingResultDialog(text) && !isMmiErrorDialog(text)) {
+            janitorAttempts = 0
+            return
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastJanitorCloseMs < CLOSE_RETRY_GAP_MS) return
+        lastJanitorCloseMs = now
+        // OK-only on the first attempt; BACK only if it's still up on a later one.
+        dismissDialog(root, allowBack = janitorAttempts > 0)
+        janitorAttempts++
+        Log.i(TAG, "Janitor dismissed a leftover forwarding/error dialog.")
+    }
+
+    /** True if [text] reads like a completed Zaad/bank money result (not an app or user screen). */
+    private fun isForwardingResultDialog(text: String): Boolean {
+        if (text.isBlank()) return false
+        val t = text.lowercase()
+        return RESULT_MARKERS.any { t.contains(it) }
+    }
+
+    /** True if [text] is the system "Connection problem or invalid MMI code." dialog. */
+    private fun isMmiErrorDialog(text: String): Boolean {
+        if (text.isBlank()) return false
+        val t = text.lowercase()
+        return ERROR_MARKERS.any { t.contains(it) }
+    }
+
+    /**
+     * Dismisses a terminal result dialog. PREFERS tapping the OK/close button
+     * (climbing to a clickable ancestor when the label node itself isn't clickable),
+     * because a button tap only ever affects the dialog. BACK is used sparingly, as a
+     * fallback: Samsung's system USSD dialog sometimes ignores the tap, but BACK is
+     * dangerous — once the dialog is gone, a stray BACK falls through to the app
+     * behind it and can CLOSE our own app (the "app closes when a forward finishes"
+     * bug). So we only press BACK when [allowBack] (a retry, where a prior OK tap
+     * provably left the dialog up) or when there's no clickable OK to tap at all —
+     * never speculatively alongside a successful tap.
+     */
+    private fun dismissDialog(root: AccessibilityNodeInfo, allowBack: Boolean) {
+        val okButton = clickableSelfOrAncestor(findLabeled(root, DISMISS_LABELS))
+        okButton?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        if (allowBack || okButton == null) performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    /** Walks up from [node] to the nearest clickable node (itself included), or null. */
+    private fun clickableSelfOrAncestor(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        var n = node
+        var hops = 0
+        while (n != null && hops < 6) {
+            if (n.isClickable) return n
+            n = n.parent
+            hops++
+        }
+        return null
+    }
+
+    /**
+     * Finds a node whose text/description matches one of [labels] — unlike
+     * [findButton] it does NOT require the node itself to be clickable, so it also
+     * catches an OK label whose click target is a parent (climbed via
+     * [clickableSelfOrAncestor]).
+     */
+    private fun findLabeled(node: AccessibilityNodeInfo?, labels: List<String>): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val label = (node.text ?: node.contentDescription)?.toString()?.lowercase()?.trim()
+        if (label != null && labels.any { label == it || label.contains(it) }) return node
+        for (i in 0 until node.childCount) {
+            findLabeled(node.getChild(i), labels)?.let { return it }
+        }
+        return null
     }
 
     private fun findEditable(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
@@ -299,10 +492,61 @@ class UssdAccessibilityService : AccessibilityService() {
         // Dismiss/close labels for the terminal balance screen.
         private val DISMISS_LABELS = listOf("ok", "close", "cancel", "dismiss", "xir", "daboo", "ka noqo")
 
-        /** Min gap between BACK presses in [closeResultDialog], to let the dialog animate away. */
+        /**
+         * Text markers that identify a *finished* Zaad/eDahab/bank money result
+         * dialog, so the janitor ([dismissLeftoverResultDialog]) only ever clears a
+         * screen that is genuinely one of ours and never an unrelated app/user dialog.
+         * Covers both the mobile "you sent…" and bank "successfully transferred…"
+         * result screens, EN + Somali, plus the leftover balance screen.
+         */
+        private val RESULT_MARKERS = listOf(
+            "successfully transferred", "transferred to your bank", "you have successfully",
+            "adeega sarifka", "transfer-id", "transferid", "you sent", "u dirtay",
+            "waxaad", "sariftay", "u sariftay", "your balance is", "balance is",
+        )
+
+        /**
+         * Text markers for the system telephony error dialog shown when a USSD dial
+         * is rejected — "Connection problem or invalid MMI code." Recognised so it's
+         * dismissed (never left blocking the next dial) and the dial is retried.
+         */
+        private val ERROR_MARKERS = listOf(
+            "invalid mmi", "mmi code", "connection problem",
+        )
+
+        /** Min gap between dismiss attempts in [closeResultDialog], to let the dialog animate away. */
         private const val CLOSE_RETRY_GAP_MS = 700L
 
-        /** Give up closing after this many BACK presses (poller timeout is the final backstop). */
+        /** Give up closing after this many dismiss attempts (poller timeout is the final backstop). */
         private const val MAX_CLOSE_ATTEMPTS = 12
+
+        /**
+         * The connected accessibility service instance, so the poller can ask it to
+         * clear a leftover result dialog right before dialing. Null when the user
+         * hasn't enabled the service (or it's been torn down).
+         */
+        @Volatile
+        private var instance: UssdAccessibilityService? = null
+
+        /**
+         * Best-effort: if a leftover terminal forwarding result dialog is still on
+         * screen, dismiss it NOW so it can't block the USSD dial that's about to
+         * happen. Called by the dialer at the START of each phase — before that
+         * phase's own dialog exists — so the only thing it can find is a stale result
+         * screen from a prior phase/cycle. Safe to call from any thread (e.g. the
+         * poller's background sweep thread): it hops to the a11y main thread and
+         * reuses [dismissLeftoverResultDialog], whose guards (no input field +
+         * recognised result text + a dismiss button) mean it can never touch an
+         * interactive PIN/menu/confirm screen even while a cycle is armed. No-op if
+         * the service isn't enabled.
+         */
+        fun clearLeftoverResultDialog() {
+            val service = instance ?: return
+            service.mainHandler.post {
+                val root = service.rootInActiveWindow ?: return@post
+                if (root.packageName == service.packageName) return@post
+                service.dismissLeftoverResultDialog(root)
+            }
+        }
     }
 }

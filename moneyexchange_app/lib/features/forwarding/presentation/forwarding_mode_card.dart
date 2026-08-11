@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/forwarding_channel.dart';
@@ -83,6 +84,30 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
     }
   }
 
+  /// Runs one balance-sweep cycle on demand (dial *800#, read balance, forward if
+  /// ≥ $1). Only offered in check-messages mode, where there's no timer. The
+  /// leftover-balance readout beside it updates a few seconds later once the
+  /// result dialog is read, so we re-pull the native status then.
+  Future<void> _runSweep() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await const ForwardingChannel().sweepNow();
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Balance sweep started')),
+      );
+      Future<void>.delayed(const Duration(seconds: 8), () {
+        if (mounted) ref.read(nativeForwardingProvider.notifier).refresh();
+      });
+    } on PlatformException {
+      if (mounted) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('Could not start the sweep')),
+        );
+      }
+    }
+  }
+
   /// Show the Doze warning whenever auto-forward is in play (either selected in
   /// the toggle or already the saved mode) and the app isn't battery-exempt yet —
   /// the exact overnight timer silently misfires without the exemption.
@@ -117,10 +142,25 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
         tone: SectionBannerTone.active,
       );
     }
+    // Enabled but not fully ready: name the piece that's ACTUALLY still missing,
+    // so we never tell the user to "finish the destination" when they already did
+    // and the real blocker is a permission (e.g. the accessibility service, which
+    // resets on a fresh install and must be turned on in Settings).
+    final String missing;
+    if (!s.hasForwardingCredentials) {
+      missing = 'finish the destination below';
+    } else if (!s.accessibilityEnabled) {
+      missing = 'turn on the e-Xawil accessibility service in Settings';
+    } else if (!s.overlayEnabled) {
+      missing = 'allow display over other apps';
+    } else if (!s.hasSmsPermission || !s.hasCallPermission) {
+      missing = 'grant the SMS & phone permissions';
+    } else {
+      missing = 'finish setup';
+    }
     return (
       icon: Icons.info_outline,
-      text:
-          '${_modeName(s.mode)} mode selected — finish the destination below to activate it.',
+      text: '${_modeName(s.mode)} mode selected — $missing to activate it.',
       tone: SectionBannerTone.pending,
     );
   }
@@ -129,6 +169,10 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final status = ref.watch(nativeForwardingProvider).value?.status;
+    // Prefer the live-streamed leftover balance (pushed the moment a forward
+    // completes); fall back to the persisted, refresh-time status value.
+    final streamedLeftover = ref.watch(leftoverBalanceStreamProvider).value;
+    final leftover = streamedLeftover ?? status?.lastLeftoverBalance;
 
     // Seed the local selection from the saved native state once it loads.
     if (status != null && !_initFromNative) {
@@ -181,17 +225,6 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
               ? null
               : (selection) => setState(() => _selectedMode = selection.first),
         ),
-        const SizedBox(height: 8),
-        Text(
-          _selectedMode == ForwardingMode.autoForward
-              ? 'Checks your balance on a timer, whether or not money has arrived. '
-                    'Set how often under the destination below.'
-              : 'Only checks your balance when a Zaad message says money arrived — '
-                    'no periodic dialing.',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ),
         const SizedBox(height: 20),
         Row(
           children: [
@@ -216,7 +249,101 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
             ],
           ],
         ),
+        // The leftover balance + manual "Run sweep" live here, right below the
+        // action buttons — only in check-messages mode (auto-forward sweeps on its
+        // own timer, so a manual run isn't offered there).
+        if (_selectedMode == ForwardingMode.messageCheck) ...[
+          const SizedBox(height: 20),
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: _LeftoverBalance(balance: leftover),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _RunSweepButton(
+                    onRun: _saving ? null : _runSweep,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ],
+    );
+  }
+}
+
+/// Left column of the sweep row: the balance left on the account after the most
+/// recent forward, read off the last result dialog. Shows "—" until the first
+/// forward completes.
+class _LeftoverBalance extends StatelessWidget {
+  const _LeftoverBalance({required this.balance});
+
+  final double? balance;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final text = balance == null ? '—' : '\$${balance!.toStringAsFixed(2)}';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.account_balance_wallet_outlined,
+                size: 16,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Leftover balance',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            text,
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Right column of the sweep row: the manual "Run sweep" button.
+class _RunSweepButton extends StatelessWidget {
+  const _RunSweepButton({required this.onRun});
+
+  final VoidCallback? onRun;
+
+  @override
+  Widget build(BuildContext context) {
+    return FilledButton.icon(
+      onPressed: onRun,
+      icon: const Icon(Icons.refresh),
+      label: const Text('Run sweep'),
+      style: FilledButton.styleFrom(
+        minimumSize: const Size.fromHeight(double.infinity),
+      ),
     );
   }
 }

@@ -22,6 +22,14 @@ final nativeForwardingProvider =
       NativeForwardingController.new,
     );
 
+/// Live stream of the account's leftover balance, pushed by the native side the
+/// instant it reads it off a completed forward's result dialog. The sweep card
+/// prefers this over the (refresh-time) [ForwardingStatus.lastLeftoverBalance] so
+/// the readout is real-time. Empty until the first forward completes this session.
+final leftoverBalanceStreamProvider = StreamProvider<double>((ref) {
+  return const ForwardingChannel().leftoverBalanceEvents();
+});
+
 class NativeForwardingController extends AsyncNotifier<NativeForwardingState> {
   static const _channel = ForwardingChannel();
 

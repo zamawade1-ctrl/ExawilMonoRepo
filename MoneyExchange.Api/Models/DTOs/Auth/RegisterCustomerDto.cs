@@ -20,17 +20,7 @@ public class RegisterCustomerDto
     [Required, EnumDataType(typeof(ForwardingMethod))]
     public ForwardingMethod ForwardingMethod { get; set; }
 
-    /// <summary>Required when <see cref="ForwardingMethod"/> is MobileNumber.</summary>
-    [MaxLength(20)]
-    public string? ForwardingPhoneNumber { get; set; }
-
-    /// <summary>Required when <see cref="ForwardingMethod"/> is BankAccount.</summary>
-    [MaxLength(120)]
-    public string? BankName { get; set; }
-
-    [MaxLength(60)]
-    public string? BankAccountNumber { get; set; }
-
-    [MaxLength(120)]
-    public string? BankAccountHolderName { get; set; }
+    // The forwarding destination (mobile number / bank account) and all PINs are
+    // NEVER sent to or stored by the backend — for security they live only in the
+    // device's on-device store. Only the chosen method is recorded server-side.
 }

@@ -31,12 +31,22 @@ object TransactionStore {
     const val STATUS_SUCCESS = "success"
     const val STATUS_FAILED = "failed"
 
-    private const val PREFS = "xawil_transactions"
     private const val KEY_EVENTS = "events"
     private const val MAX_EVENTS = 1000
     private const val TAG = "Xawil/TxStore"
 
     private val lock = Any()
+
+    /**
+     * Per-user ledger file: each signed-in user has their own transaction history,
+     * keyed by the active user's namespace (see [SessionStore]). Signed out uses
+     * "anon". Switching users switches which ledger the dashboard reads.
+     */
+    private fun prefs(context: Context) =
+        context.applicationContext.getSharedPreferences(
+            "xawil_transactions_${SessionStore.namespace(context)}",
+            Context.MODE_PRIVATE,
+        )
 
     /**
      * Appends one event and returns its map form (also handed to listeners). All
@@ -65,7 +75,7 @@ object TransactionStore {
             "timestampMs" to System.currentTimeMillis(),
         )
         synchronized(lock) {
-            val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val prefs = prefs(context)
             val arr = readArray(prefs)
             arr.put(JSONObject(event as Map<*, *>))
             // Trim oldest from the front so the array never grows unbounded.
@@ -85,7 +95,7 @@ object TransactionStore {
 
     /** All events as maps, in stored order (oldest first). Callers sort as needed. */
     fun all(context: Context): List<Map<String, Any?>> {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = prefs(context)
         val arr = synchronized(lock) { readArray(prefs) }
         val out = ArrayList<Map<String, Any?>>(arr.length())
         for (i in 0 until arr.length()) {
@@ -110,8 +120,7 @@ object TransactionStore {
     /** Wipes the ledger — used on account deletion so no history outlives the account. */
     fun clear(context: Context) {
         synchronized(lock) {
-            context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().remove(KEY_EVENTS).apply()
+            prefs(context).edit().remove(KEY_EVENTS).apply()
         }
     }
 

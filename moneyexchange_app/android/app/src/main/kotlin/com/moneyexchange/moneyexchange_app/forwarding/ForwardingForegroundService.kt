@@ -98,6 +98,13 @@ class ForwardingForegroundService : Service() {
                 requestManualSweep()
             }
 
+            ACTION_CHECK_BALANCE -> {
+                // Check-messages refresh: dial *800#, read + publish the balance for
+                // the leftover readout, and stop — no forward. Never re-anchors the
+                // interval (that's an auto-forward concept).
+                requestBalanceCheck()
+            }
+
             ACTION_FORWARD_AMOUNT -> {
                 // Check-messages: a Zaad 898 exchange SMS arrived; [SmsReceiver] already
                 // read the exchanged dollar amount. Forward exactly that amount to the
@@ -268,6 +275,65 @@ class ForwardingForegroundService : Service() {
             val ok = performSend(destination, amount, secondary, subscriptionId)
             recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok)
         }
+    }
+
+    /**
+     * Check-messages refresh: runs a balance-ONLY `*800#` read (no forward) on the
+     * worker thread, gated by [sweepLock] so it never overlaps a real sweep/forward.
+     * Skips if something is already running (that read/forward already refreshes the
+     * balance), then stands the service down since this isn't the auto-forward poller.
+     */
+    private fun requestBalanceCheck() {
+        synchronized(sweepLock) {
+            if (sweepRunning) {
+                Log.i(TAG, "Busy; skipping the balance-only check (a run is already refreshing it).")
+                stopIfNotAutoForwardPoller()
+                return
+            }
+            sweepRunning = true
+        }
+        val h = handler
+        if (h == null) {
+            synchronized(sweepLock) { sweepRunning = false }
+            return
+        }
+        h.post {
+            try {
+                withWakeLock { runBalanceCheckOnly() }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Balance-only check failed", e)
+            } finally {
+                synchronized(sweepLock) { sweepRunning = false }
+                stopIfNotAutoForwardPoller()
+            }
+        }
+    }
+
+    /**
+     * Dials `*800#`, lets the accessibility service read the balance (which persists
+     * + live-publishes it as the leftover balance), then finishes — deliberately no
+     * forward. This is the check-messages "refresh to see my balance" path.
+     */
+    private fun runBalanceCheckOnly() {
+        val settings = ForwardingSettings(this)
+        val primary = settings.pin
+        if (primary == null) {
+            Log.w(TAG, "Balance-only check but no primary PIN stored; skipping.")
+            return
+        }
+        val subscriptionId = settings.simSubscriptionId
+        Log.i(TAG, "Balance-only check on sub=$subscriptionId (no forward).")
+        UssdSession.beginBalanceCheck(primary, settings.secondaryPin ?: "", settings.destination ?: "")
+        if (!UssdDialer.dialBalanceCheck(this, subscriptionId)) {
+            UssdSession.finish()
+            return
+        }
+        // Wait until the balance is READ (readBalance publishes the leftover); then
+        // stop without forwarding. A stalled read just times out — nothing is sent.
+        if (!awaitBalanceRead()) {
+            Log.w(TAG, "Balance-only check timed out / failed.")
+        }
+        UssdSession.finish()
     }
 
     private fun postSweepWorker() {
@@ -723,6 +789,13 @@ class ForwardingForegroundService : Service() {
         const val ACTION_SWEEP_NOW = "com.moneyexchange.forwarding.SWEEP_NOW"
 
         /**
+         * Dials `*800#`, reads the balance, and updates the leftover readout — but
+         * does NOT forward. Used by the check-messages refresh so pulling to refresh
+         * shows the real-time balance without running a forward.
+         */
+        const val ACTION_CHECK_BALANCE = "com.moneyexchange.forwarding.CHECK_BALANCE"
+
+        /**
          * Fired by [SmsReceiver] on a Zaad 898 exchange SMS: forward the exact
          * exchanged amount to the destination, deduped by the SMS ref, no *800#.
          */
@@ -807,6 +880,12 @@ class ForwardingForegroundService : Service() {
          * tick — the auto-forward manual refresh / "sweep now" action.
          */
         fun sweepNow(context: Context) = send(context, ACTION_SWEEP_NOW)
+
+        /**
+         * Reads the balance via `*800#` and updates the leftover readout WITHOUT
+         * forwarding — the check-messages refresh action.
+         */
+        fun checkBalance(context: Context) = send(context, ACTION_CHECK_BALANCE)
 
         /**
          * Check-messages path: forward exactly [amountUsd] (the dollars a Zaad 898

@@ -19,13 +19,14 @@ public class UssdMoneyForwardingService : IMoneyForwardingService
     public Task<ForwardResult> ForwardAsync(
         ForwardDestination destination, decimal amountUsd, CancellationToken cancellationToken = default)
     {
+        // The concrete destination + PIN aren't stored server-side (device-only), so
+        // this fallback can only note the method — real forwarding runs on-device.
         var note = destination.Method switch
         {
             ForwardingMethod.MobileNumber =>
-                $"[USSD stub] Would forward ${amountUsd:F2} to mobile number {destination.PhoneNumber}.",
+                $"[USSD stub] Would forward ${amountUsd:F2} to the customer's mobile number (destination stored on-device).",
             ForwardingMethod.BankAccount =>
-                $"[Bank stub] Would transfer ${amountUsd:F2} to {destination.BankAccountHolderName} " +
-                $"at {destination.BankName} (acct {destination.BankAccountNumber}).",
+                $"[Bank stub] Would transfer ${amountUsd:F2} to the customer's bank account (destination stored on-device).",
             _ => "Unknown forwarding method."
         };
 

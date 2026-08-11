@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 
 /// How the on-device sweep decides when to run. Mirrors the native
@@ -69,6 +71,8 @@ class ForwardingStatus {
     required this.simSubscriptionId,
     required this.mode,
     required this.lastAccountPhone,
+    required this.lastLeftoverBalance,
+    required this.lastLeftoverAtMs,
   });
 
   final bool hasSmsPermission;
@@ -108,6 +112,13 @@ class ForwardingStatus {
   /// The account's own number, as last read from the *800# balance screen.
   final String? lastAccountPhone;
 
+  /// The balance left on the account after the most recent forward, read off the
+  /// "…Your Balance is $X." result dialog. Null until the first forward completes.
+  final double? lastLeftoverBalance;
+
+  /// Wall-clock millis when [lastLeftoverBalance] was captured; 0 if never.
+  final int lastLeftoverAtMs;
+
   /// Whether the destination is a bank account (vs a mobile number).
   bool get isBankMethod => forwardingMethod == 1;
 
@@ -123,6 +134,18 @@ class ForwardingStatus {
       hasPhoneStatePermission &&
       accessibilityEnabled &&
       overlayEnabled;
+
+  /// Whether the forwarding destination + PINs are configured (the non-permission
+  /// half of [fullyReady]): mobile needs a destination number + both PINs, bank
+  /// needs the account PIN + the bank PIN. Used to word the "not yet active"
+  /// banner accurately — so it doesn't tell the user to "finish the destination"
+  /// when the real blocker is a missing permission.
+  bool get hasForwardingCredentials {
+    if (!hasPin) return false;
+    return isBankMethod
+        ? hasBankPin
+        : (destination?.isNotEmpty ?? false) && hasSecondaryPin;
+  }
 
   /// Everything the native forwarder needs before the balance sweep can run.
   /// The credential requirements differ by method: mobile needs a destination
@@ -166,6 +189,8 @@ class ForwardingStatus {
           (map['mode'] as num?)?.toInt() ?? ForwardingMode.messageCheck.index,
         ),
         lastAccountPhone: map['lastAccountPhone'] as String?,
+        lastLeftoverBalance: (map['lastLeftoverBalance'] as num?)?.toDouble(),
+        lastLeftoverAtMs: (map['lastLeftoverAtMs'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -176,6 +201,18 @@ class ForwardingChannel {
   const ForwardingChannel();
 
   static const _channel = MethodChannel('xawil/forwarding');
+  static const _balanceEvents = EventChannel('xawil/forwarding/balance');
+
+  /// Streams the account's leftover balance the instant the native side reads it
+  /// off a completed forward's result dialog, so the UI updates without a refresh.
+  /// Empty on non-Android platforms (no on-device forwarder).
+  Stream<double> leftoverBalanceEvents() {
+    if (!Platform.isAndroid) return const Stream.empty();
+    return _balanceEvents
+        .receiveBroadcastStream()
+        .where((e) => e is num)
+        .map((e) => (e as num).toDouble());
+  }
 
   Future<ForwardingStatus> getStatus() async {
     final raw = await _channel.invokeMethod<Map<Object?, Object?>>('getStatus');
@@ -247,6 +284,18 @@ class ForwardingChannel {
   /// Runs one balance-sweep cycle now (dial *800#, read balance, forward if
   /// ≥ $1), for testing on a real device without waiting for the next tick.
   Future<void> sweepNow() => _channel.invokeMethod('sweepNow');
+
+  /// Reads the account balance via *800# and publishes it to the leftover-balance
+  /// stream WITHOUT forwarding — the check-messages "pull to refresh my balance"
+  /// action. No-op off Android.
+  Future<void> checkBalance() => _channel.invokeMethod('checkBalance');
+
+  /// Tells the native side which signed-in user owns the on-device data (settings,
+  /// PINs, ledger), so each user gets their own persistent, isolated data. Pass the
+  /// backend User id on login / session-restore, or null on logout. No-op off
+  /// Android (nothing on-device to scope).
+  Future<void> setActiveUser(int? userId) =>
+      _channel.invokeMethod('setActiveUser', {'userId': userId});
 
   /// Stops the on-device forwarder so no USSD runs once the user is signed out —
   /// in either mode. Disables the enabled flag (standing down the SMS-driven

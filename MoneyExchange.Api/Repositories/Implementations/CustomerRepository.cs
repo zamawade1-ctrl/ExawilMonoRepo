@@ -64,10 +64,6 @@ public class CustomerRepository : ICustomerRepository
     {
         try
         {
-            var validationError = ValidateForwardingFields(dto);
-            if (validationError is not null)
-                return ServiceResponse<Customer>.BadRequest(validationError);
-
             var phone = dto.PhoneNumber?.Trim() ?? string.Empty;
 
             // Phone is optional now; only enforce uniqueness when one was supplied.
@@ -122,10 +118,6 @@ public class CustomerRepository : ICustomerRepository
     {
         try
         {
-            var validationError = ValidateForwardingFields(dto);
-            if (validationError is not null)
-                return ServiceResponse<Customer>.BadRequest(validationError);
-
             var phone = dto.PhoneNumber?.Trim() ?? string.Empty;
             var entity = await _context.Customers.FirstOrDefaultAsync(c => c.UserId == userId);
 
@@ -165,38 +157,14 @@ public class CustomerRepository : ICustomerRepository
         }
     }
 
-    private static string? ValidateForwardingFields(RegisterCustomerDto dto)
-    {
-        if (dto.ForwardingMethod == ForwardingMethod.MobileNumber &&
-            string.IsNullOrWhiteSpace(dto.ForwardingPhoneNumber))
-            return "ForwardingPhoneNumber is required when ForwardingMethod is MobileNumber.";
-
-        // Bank forwarding collapsed to a single PIN, carried in BankAccountNumber
-        // (the old bank name / holder fields are no longer collected by the app).
-        if (dto.ForwardingMethod == ForwardingMethod.BankAccount &&
-            string.IsNullOrWhiteSpace(dto.BankAccountNumber))
-            return "Bank account PIN is required when ForwardingMethod is BankAccount.";
-
-        return null;
-    }
-
     private static void ApplyFields(Customer entity, RegisterCustomerDto dto, string phone)
     {
         entity.FullName = dto.FullName.Trim();
         // Store null (not "") when no phone was supplied, so phone-less profiles
         // don't collide on the unique PhoneNumber index (NULLs are distinct).
         entity.PhoneNumber = phone.Length == 0 ? null : phone;
+        // Only the method is persisted server-side. The forwarding destination and
+        // all PINs live exclusively in the device's on-device store (never the DB).
         entity.ForwardingMethod = dto.ForwardingMethod;
-        entity.ForwardingPhoneNumber = dto.ForwardingMethod == ForwardingMethod.MobileNumber
-            ? dto.ForwardingPhoneNumber!.Trim()
-            : null;
-        // Bank forwarding is a single PIN now, stored in BankAccountNumber. The
-        // old bank name / holder columns are no longer collected - keep them null.
-        // (Null-tolerant .Trim() in case a legacy caller still sends them.)
-        entity.BankName = null;
-        entity.BankAccountNumber = dto.ForwardingMethod == ForwardingMethod.BankAccount
-            ? dto.BankAccountNumber?.Trim()
-            : null;
-        entity.BankAccountHolderName = null;
     }
 }

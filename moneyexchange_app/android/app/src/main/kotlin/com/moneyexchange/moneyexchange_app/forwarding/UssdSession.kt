@@ -97,6 +97,26 @@ object UssdSession {
     @Volatile var forwardAmount: String? = null
         private set
 
+    /**
+     * Set by the a11y service when the system shows the "Connection problem or
+     * invalid MMI code" dialog after a dial — i.e. the USSD call was rejected (radio
+     * busy / a prior session not fully torn down / dialed too fast). [UssdDialer]
+     * clears it before each dial attempt and re-dials when it flips true, so a
+     * transient rejection doesn't turn into a dropped forward.
+     */
+    @Volatile var mmiError: Boolean = false
+        private set
+
+    /** Called by the a11y service when it dismisses an MMI-error dialog. */
+    fun signalMmiError() {
+        mmiError = true
+    }
+
+    /** Called by [UssdDialer] to reset the flag before (re-)dialing. */
+    fun clearMmiError() {
+        mmiError = false
+    }
+
     @Synchronized
     fun beginBalanceCheck(primary: String, secondary: String, dest: String, option: String = "1") {
         primaryPin = primary
@@ -258,6 +278,7 @@ object UssdSession {
         accountPhone = null
         bankPin = null
         forwardAmount = null
+        mmiError = false
     }
 
     /** True while a cycle is in flight and the current dialog window is still fresh. */
