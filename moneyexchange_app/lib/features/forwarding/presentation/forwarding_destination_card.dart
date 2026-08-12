@@ -11,31 +11,29 @@ import '../data/forwarding_channel.dart';
 import 'forwarding_providers.dart';
 import 'widgets/forwarding_section.dart';
 
-/// The Home tab's "forwarding destination" section: where the user's USD is
-/// sent — a mobile number (dialed via USSD on Android) or a bank account. A
-/// banner at the top states the currently enabled destination; saving pops a
-/// success dialog naming what was enabled. The full name is taken from the
-/// signed-in Google identity, and the SIM lives in its own section below — this
-/// card is purely about the destination.
+/// The Home tab's "forwarding destination" section. The app forwards to a **bank
+/// account only** now (the mobile-number option was removed), so this card just
+/// collects the two PINs the bank deposit needs:
+///   - the **Primary PIN** (the account PIN that unlocks `*800#` — required both
+///     to dial the balance check and to run the bank deposit walk), and
+///   - the **Bank account PIN** (authorises the transfer on the deposit menu).
 ///
-/// Once a destination is saved the card opens read-only (just the values, no
-/// input fields) behind an Edit button; a first-time setup opens straight into
-/// the form. See [_DestinationForm].
+/// Both PINs live on-device only (Android Keystore) — never on the backend. Once
+/// saved, the card opens read-only behind an Edit button; a first-time setup opens
+/// straight into the form. See [_DestinationForm].
 class ForwardingDestinationCard extends ConsumerWidget {
   const ForwardingDestinationCard({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // On Android the on-device native settings are the source of truth for the
-    // destination, so the card is ALWAYS ready instantly — it never waits on a
-    // backend fetch and never shows a loading spinner. The backend profile is
-    // read best-effort only, as an extra prefill/display fallback. On iOS
-    // (management-only, no native forwarder) the backend profile is the sole
-    // store, so keep the load/error gating there.
+    // On Android the on-device native settings are the source of truth, so the
+    // card is ALWAYS ready instantly — it never waits on a backend fetch. On iOS
+    // (management-only) the backend profile is the sole store, so keep the
+    // load/error gating there.
     if (Platform.isAndroid) {
       final profile = ref.watch(customerProfileControllerProvider).value;
       return ForwardingSectionCard(
-        icon: Icons.account_balance_wallet_outlined,
+        icon: Icons.account_balance_outlined,
         title: 'Forwarding destination',
         children: [
           const _DestinationBanner(),
@@ -47,7 +45,7 @@ class ForwardingDestinationCard extends ConsumerWidget {
 
     final profileState = ref.watch(customerProfileControllerProvider);
     return ForwardingSectionCard(
-      icon: Icons.account_balance_wallet_outlined,
+      icon: Icons.account_balance_outlined,
       title: 'Forwarding destination',
       children: [
         const _DestinationBanner(),
@@ -57,8 +55,6 @@ class ForwardingDestinationCard extends ConsumerWidget {
             padding: EdgeInsets.symmetric(vertical: 32),
             child: Center(child: CircularProgressIndicator()),
           ),
-          // A load error must never dead-end the form: show it anyway (empty, so
-          // it can still be filled and saved) with a small, non-blocking notice.
           error: (error, _) => Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -77,36 +73,27 @@ class ForwardingDestinationCard extends ConsumerWidget {
   }
 }
 
-/// Banner stating the destination that's currently enabled (from the saved
-/// backend profile, falling back to a native-only saved destination).
+/// Banner stating whether a bank-account destination is set up (read from the
+/// native status — the destination + PINs are on-device only).
 class _DestinationBanner extends ConsumerWidget {
   const _DestinationBanner();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // The destination + PINs are on-device only (never the backend), so the
-    // banner reads them from the native status.
     final nativeStatus = ref.watch(nativeForwardingProvider).value?.status;
 
-    IconData icon = Icons.info_outline;
-    var tone = SectionBannerTone.neutral;
-    var text = 'No destination set yet. Choose one below and save.';
-
-    if (nativeStatus != null &&
-        nativeStatus.isBankMethod &&
-        nativeStatus.hasBankPin) {
-      // Native (on-device) bank destination.
-      icon = Icons.check_circle;
-      tone = SectionBannerTone.active;
-      text = 'Forwarding to your bank account.';
-    } else if ((nativeStatus?.destination?.isNotEmpty ?? false) &&
-        !(nativeStatus?.isBankMethod ?? false)) {
-      icon = Icons.check_circle;
-      tone = SectionBannerTone.active;
-      text = 'Forwarding to mobile number ${nativeStatus!.destination}.';
+    if (nativeStatus != null && nativeStatus.hasBankPin) {
+      return const SectionStatusBanner(
+        icon: Icons.check_circle,
+        text: 'Forwarding to your bank account.',
+        tone: SectionBannerTone.active,
+      );
     }
-
-    return SectionStatusBanner(icon: icon, text: text, tone: tone);
+    return const SectionStatusBanner(
+      icon: Icons.info_outline,
+      text: 'No bank account set up yet. Add your PINs below and save.',
+      tone: SectionBannerTone.neutral,
+    );
   }
 }
 
@@ -161,25 +148,20 @@ class _DestinationForm extends ConsumerStatefulWidget {
 class _DestinationFormState extends ConsumerState<_DestinationForm> {
   final _formKey = GlobalKey<FormState>();
 
-  // Destination + all PINs are on-device only now, so every field starts empty
-  // and is seeded from the native status (see [_seedFromNative]).
-  final _destinationController = TextEditingController();
+  // Bank-only now: the account (primary) PIN that unlocks *800#, and the bank PIN
+  // that authorises the deposit. Both are on-device only, seeded from the native
+  // status (see [_seedFromNative]).
   final _pinController = TextEditingController();
-  final _secondaryPinController = TextEditingController();
   final _bankPinController = TextEditingController();
 
-  late ForwardingMethod _method =
-      widget.initialProfile?.forwardingMethod ?? ForwardingMethod.mobileNumber;
-  // The balance-sweep interval lives here now (below the PINs) rather than in
-  // the mode card; it only applies while auto-forward mode is active.
+  // The balance-sweep interval; only applies while auto-forward mode is active.
   int _intervalMinutes = 1;
   bool _seededFromNative = false;
   bool _saving = false;
-  // Reveals the PIN field(s) as you type. Off by default so PINs stay masked.
+  // Reveals the PIN fields as you type. Off by default so PINs stay masked.
   bool _showPin = false;
-  // View (read-only) vs edit. A profile that already has a destination opens
+  // View (read-only) vs edit. A profile that already has a bank PIN opens
   // read-only behind an Edit button; a first-time setup opens into the form.
-  // Resolved in initState from the saved profile + native state.
   bool _editing = true;
 
   @override
@@ -191,135 +173,85 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
 
   @override
   void dispose() {
-    _destinationController.dispose();
     _pinController.dispose();
-    _secondaryPinController.dispose();
     _bankPinController.dispose();
     super.dispose();
   }
 
-  /// Whether a destination is already set up (so the card should open in the
-  /// read-only view). The destination + PINs live on-device now, so this is based
-  /// solely on the native side (the source of truth on Android), matched to the
-  /// saved method so a leftover value for the other method doesn't count.
-  bool _hasSavedDestination(ForwardingStatus? status) {
-    final nativeMobileSaved =
-        status != null &&
-        !status.isBankMethod &&
-        (status.destination?.isNotEmpty ?? false);
-    final nativeBankSaved =
-        status != null && status.isBankMethod && status.hasBankPin;
-    return nativeMobileSaved || nativeBankSaved;
-  }
+  /// Whether a bank destination is already set up (so the card opens read-only).
+  /// The bank PIN is the signal that setup was completed; it lives on-device.
+  bool _hasSavedDestination(ForwardingStatus? status) =>
+      status != null && status.hasBankPin;
 
-  /// Seeds the sweep interval, the destination field, and the primary/secondary
-  /// PIN fields from the native side's saved values, once they load. The PINs are
-  /// pre-filled (masked) so a returning user sees their saved values just like the
-  /// bank PIN; a first-time user has none stored, so the fields stay empty.
+  /// Seeds the interval + both PIN fields from the native side's saved values,
+  /// once they load, so a returning user sees their saved values (masked). A
+  /// first-time user has none stored, so the fields stay empty.
   void _seedFromNative(ForwardingStatus? status) {
     if (_seededFromNative || status == null) return;
     _seededFromNative = true;
     _intervalMinutes = status.intervalMinutes.clamp(1, 5);
-    // With no backend profile (the norm on Android), the native side is the only
-    // record of which method was chosen, so adopt it. When a backend profile did
-    // set the method, leave that in place.
-    if (widget.initialProfile == null) {
-      _method = ForwardingMethod.fromWire(status.forwardingMethod);
-    }
-    if (_destinationController.text.isEmpty &&
-        (status.destination?.isNotEmpty ?? false)) {
-      _destinationController.text = status.destination!;
-    }
     if (_pinController.text.isEmpty && (status.pin?.isNotEmpty ?? false)) {
       _pinController.text = status.pin!;
     }
-    if (_secondaryPinController.text.isEmpty &&
-        (status.secondaryPin?.isNotEmpty ?? false)) {
-      _secondaryPinController.text = status.secondaryPin!;
-    }
-    // Bank PIN now comes back from the native Keystore too, so the bank form
-    // pre-fills without any backend round-trip.
     if (_bankPinController.text.isEmpty && (status.bankPin?.isNotEmpty ?? false)) {
       _bankPinController.text = status.bankPin!;
     }
   }
 
   void _cancelEdit() {
-    // Revert every field to the native side's saved value — the real (and only)
-    // source of truth for method / destination / all PINs.
+    // Revert every field to the native side's saved value.
     final status = ref.read(nativeForwardingProvider).value?.status;
-    final nativeMethod = status != null
-        ? ForwardingMethod.fromWire(status.forwardingMethod)
-        : ForwardingMethod.mobileNumber;
     setState(() {
       _editing = false;
       _showPin = false;
-      _method = nativeMethod;
-      _destinationController.text = status?.destination ?? '';
-      _bankPinController.text = status?.bankPin ?? '';
       _pinController.text = status?.pin ?? '';
-      _secondaryPinController.text = status?.secondaryPin ?? '';
+      _bankPinController.text = status?.bankPin ?? '';
     });
   }
 
-  /// Assembles the backend profile payload from the current form values. Used
-  /// for the (best-effort on Android) backend sync and the iOS backend save.
+  /// The backend profile payload (best-effort sync on Android, the store on iOS).
+  /// The destination + PINs are never sent — just identity + the (bank) method.
   ForwardingProfileInput _buildInput() {
-    // Full name comes from the signed-in Google identity (the backend still
-    // requires it); this card no longer asks for it.
-    final authName = ref.read(authControllerProvider).value?.fullName.trim() ?? '';
+    final authName =
+        ref.read(authControllerProvider).value?.fullName.trim() ?? '';
     final fullName = authName.isNotEmpty
         ? authName
         : (widget.initialProfile?.fullName ?? 'e-Xawil user');
 
-    // The destination + PINs are saved on-device only and never sent to the
-    // backend, so the backend payload carries just identity + the chosen method.
     return ForwardingProfileInput(
       fullName: fullName,
-      // The account's own number is read on-device from the *800# balance
-      // screen, so it isn't collected here. Preserve any existing value.
       phoneNumber: widget.initialProfile?.phoneNumber,
-      forwardingMethod: _method,
+      forwardingMethod: ForwardingMethod.bankAccount,
     );
   }
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     final messenger = ScaffoldMessenger.of(context);
-    final isMobile = _method == ForwardingMethod.mobileNumber;
-    final destination = _destinationController.text.trim();
     setState(() => _saving = true);
     try {
       final input = _buildInput();
 
       if (Platform.isAndroid) {
-        // The on-device forwarder is the source of truth, and saving to it is a
-        // local, reliable operation (SharedPreferences + Android Keystore). This
-        // is what makes forwarding actually work, so it must succeed for the save
-        // to count. For a bank destination the native side dials the *800#
-        // deposit walk and types the bank PIN; the mobile destination is left
-        // untouched (passed null) so switching back still pre-fills it. The
-        // account PIN (primary) is reused from what's already stored.
+        // The on-device forwarder is the source of truth. Save the bank method
+        // with BOTH PINs: the primary (account) PIN unlocks *800#, and the bank
+        // PIN authorises the deposit. The mobile destination / secondary PIN are
+        // no longer used, so they're left untouched (passed null).
         await ref
             .read(nativeForwardingProvider.notifier)
             .saveDestination(
-              forwardingMethod: _method.index,
-              destination: isMobile ? destination : null,
+              forwardingMethod: ForwardingMethod.bankAccount.index,
+              destination: null,
               pin: _pinController.text.isEmpty
                   ? null
                   : _pinController.text.trim(),
-              secondaryPin: _secondaryPinController.text.isEmpty
-                  ? null
-                  : _secondaryPinController.text.trim(),
-              bankPin: isMobile ? null : _bankPinController.text.trim(),
+              secondaryPin: null,
+              bankPin: _bankPinController.text.trim(),
               intervalMinutes: _intervalMinutes,
             );
 
-        // Sync to the backend as a BEST-EFFORT background task: it's only a
-        // history/management mirror, and forwarding runs entirely on-device, so a
-        // backend that's unreachable (very common on a physical phone) must never
-        // fail the save or block the UI. Capture the notifier up front so the
-        // fire-and-forget call doesn't touch `ref` after this widget is gone.
+        // Best-effort backend mirror — forwarding runs entirely on-device, so an
+        // unreachable backend must never fail the save.
         final profileNotifier = ref.read(
           customerProfileControllerProvider.notifier,
         );
@@ -331,23 +263,19 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
           }
         }());
       } else {
-        // iOS / other: no native forwarder, so the backend profile is the only
-        // store. This one is awaited and surfaces failures via the snackbar.
         await ref.read(customerProfileControllerProvider.notifier).save(input);
       }
 
       if (!mounted) return;
-      // Saved - collapse back to the read-only view.
       setState(() {
         _editing = false;
         _showPin = false;
       });
       await showForwardingSuccessDialog(
         context,
-        title: isMobile ? 'Mobile number enabled' : 'Bank account enabled',
-        message: isMobile
-            ? 'Your Zaad & eDahab USD will be forwarded to $destination.'
-            : 'Your Zaad & eDahab USD will be forwarded to your bank account.',
+        title: 'Bank account enabled',
+        message:
+            'Your Zaad & eDahab USD will be forwarded to your bank account.',
       );
     } catch (_) {
       if (mounted) {
@@ -372,40 +300,34 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
     return _buildForm(theme, status);
   }
 
-  // --- Read-only view (a destination is saved and we're not editing) ---------
+  // --- Read-only view (a bank destination is saved and we're not editing) -----
 
   Widget _buildReadOnly(ThemeData theme, ForwardingStatus? status) {
-    final isMobile = _method == ForwardingMethod.mobileNumber;
-
     final rows = <Widget>[];
-    if (isMobile) {
-      // Destination comes from the on-device store only.
-      final destination = status?.destination ?? '—';
-      rows.add(_ReadOnlyRow(label: 'Destination mobile number', value: destination));
-      if (Platform.isAndroid) {
-        // The check interval only governs auto-forward mode's timer; in
-        // check-messages mode there is no timer (forwarding fires on the Zaad
-        // balance SMS), so don't show an interval that has no effect.
-        if (status?.mode == ForwardingMode.autoForward) {
-          rows.add(
-            _ReadOnlyRow(
-              label: 'Check every',
-              value: '$_intervalMinutes minute${_intervalMinutes == 1 ? '' : 's'}',
-            ),
-          );
-        }
-        if (status?.hasPin ?? false) {
-          rows.add(const _ReadOnlyRow(label: 'PIN', value: '•••• saved'));
-        }
-      }
-    } else {
-      rows.add(const _ReadOnlyRow(label: 'Bank account PIN', value: '•••• saved'));
+    if (Platform.isAndroid && (status?.hasPin ?? false)) {
+      rows.add(const _ReadOnlyRow(label: 'Primary PIN', value: '•••• saved'));
+    }
+    rows.add(const _ReadOnlyRow(label: 'Bank account PIN', value: '•••• saved'));
+    if (Platform.isAndroid && status?.mode == ForwardingMode.autoForward) {
+      rows.add(
+        _ReadOnlyRow(
+          label: 'Check every',
+          value: '$_intervalMinutes minute${_intervalMinutes == 1 ? '' : 's'}',
+        ),
+      );
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text('Your money is forwarded to', style: theme.textTheme.titleMedium),
+        const SizedBox(height: 4),
+        Text(
+          'Your bank account',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
         const SizedBox(height: 12),
         ...rows,
         const SizedBox(height: 20),
@@ -431,30 +353,12 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Forward my money to', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 12),
-          SegmentedButton<ForwardingMethod>(
-            segments: const [
-              ButtonSegment(
-                value: ForwardingMethod.mobileNumber,
-                label: Text('Mobile number'),
-                icon: Icon(Icons.phone_android),
-              ),
-              ButtonSegment(
-                value: ForwardingMethod.bankAccount,
-                label: Text('Bank account'),
-                icon: Icon(Icons.account_balance),
-              ),
-            ],
-            selected: {_method},
-            onSelectionChanged: (selection) =>
-                setState(() => _method = selection.first),
+          Text(
+            'Forward my money to my bank account',
+            style: theme.textTheme.titleMedium,
           ),
           const SizedBox(height: 16),
-          if (_method == ForwardingMethod.mobileNumber)
-            ..._mobileNumberFields(theme, status)
-          else
-            ..._bankAccountFields(theme, status),
+          ..._bankAccountFields(theme, status),
           const SizedBox(height: 24),
           Row(
             children: [
@@ -486,7 +390,7 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
     );
   }
 
-  /// The "Show PIN" checkbox that unmasks the PIN field(s) as they're typed.
+  /// The "Show PIN" checkbox that unmasks the PIN fields as they're typed.
   Widget _showPinToggle() {
     return InkWell(
       onTap: () => setState(() => _showPin = !_showPin),
@@ -511,8 +415,7 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
     );
   }
 
-  /// The "Check every" balance-sweep interval dropdown, shared by both the
-  /// mobile and bank forms (the sweep's phase-1 balance check runs for both).
+  /// The "Check every" balance-sweep interval dropdown (auto-forward mode only).
   Widget _checkIntervalField() {
     return DropdownButtonFormField<int>(
       initialValue: _intervalMinutes,
@@ -534,71 +437,73 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
     );
   }
 
-  Widget _destinationField() {
-    return TextFormField(
-      key: const ValueKey('destination'),
-      controller: _destinationController,
-      keyboardType: TextInputType.phone,
-      decoration: const InputDecoration(
-        labelText: 'Destination mobile number',
-        helperText: 'Where your Zaad/eDahab USD is forwarded',
-      ),
-      validator: (value) =>
-          (value == null || value.trim().isEmpty) ? 'Required' : null,
-    );
-  }
-
-  List<Widget> _mobileNumberFields(ThemeData theme, ForwardingStatus? status) {
+  List<Widget> _bankAccountFields(ThemeData theme, ForwardingStatus? status) {
     if (!Platform.isAndroid) {
       return [
-        _destinationField(),
-        const SizedBox(height: 16),
         _InfoNote(
           theme: theme,
           text:
               'Automatic USSD forwarding runs on Android only — iOS can\'t dial the '
-              'balance USSD or auto-fill the PIN. Use this screen on your Android phone '
-              'with the Zaad SIM.',
+              'balance USSD or auto-fill the PINs. Use this screen on your Android '
+              'phone with the Zaad SIM.',
         ),
       ];
     }
 
+    final hasSavedPin = status?.hasPin ?? false;
+    final hasSavedBankPin = status?.hasBankPin ?? false;
+    final isAuto = status?.mode == ForwardingMode.autoForward;
+
     return [
-      _destinationField(),
-      const SizedBox(height: 16),
-      TextField(
+      // Primary (account) PIN — required for BOTH dialing the *800# balance check
+      // and running the bank deposit walk, so it lives here in the bank form now.
+      TextFormField(
+        key: const ValueKey('primaryPin'),
         controller: _pinController,
         obscureText: !_showPin,
         keyboardType: TextInputType.number,
         decoration: InputDecoration(
           labelText: 'Primary PIN',
-          helperText: status?.hasPin ?? false
-              ? 'Saved — tap "Show PIN" to reveal. Typed on the *800# balance & *806# confirm prompts.'
-              : 'Typed on the *800# balance and *806# confirm prompts.',
+          helperText: hasSavedPin
+              ? 'Saved — tap "Show PIN" to reveal. Unlocks the *800# balance check and bank deposit.'
+              : 'Your Zaad account PIN. Unlocks the *800# balance check and bank deposit.',
           helperMaxLines: 2,
         ),
+        validator: (value) =>
+            (value == null || value.trim().isEmpty) ? 'Required' : null,
       ),
       const SizedBox(height: 12),
-      TextField(
-        controller: _secondaryPinController,
+      // Bank account PIN — authorises the transfer on the deposit menu.
+      TextFormField(
+        key: const ValueKey('bankAccountPin'),
+        controller: _bankPinController,
         obscureText: !_showPin,
         keyboardType: TextInputType.number,
         decoration: InputDecoration(
-          labelText: 'Secondary PIN',
-          helperText: status?.hasSecondaryPin ?? false
-              ? 'Saved — tap "Show PIN" to reveal. Sent inside the *806# command.'
-              : 'Sent inside the *806# send command.',
+          labelText: 'Bank account PIN',
+          helperText: hasSavedBankPin
+              ? 'Saved. Used to authorise transfers to your bank account.'
+              : 'Used to authorise transfers to your bank account.',
           helperMaxLines: 2,
         ),
+        validator: (value) =>
+            (value == null || value.trim().isEmpty) ? 'Required' : null,
       ),
       _showPinToggle(),
-      // The sweep interval only applies to auto-forward mode's timer. In
-      // check-messages mode there is no timer at all, so hide the control
-      // entirely rather than offer a setting that does nothing.
-      if (status?.mode == ForwardingMode.autoForward) ...[
+      if (isAuto) ...[
         const SizedBox(height: 8),
         _checkIntervalField(),
       ],
+      const SizedBox(height: 12),
+      _InfoNote(
+        theme: theme,
+        text: isAuto
+            ? 'The balance sweep dials *800# with your Primary PIN, then deposits to '
+                  'your bank account using the Bank account PIN. "Check every" sets how '
+                  'often it runs in auto-forward mode.'
+            : 'When a Zaad balance message arrives, the app dials *800# with your '
+                  'Primary PIN and deposits to your bank account using the Bank account PIN.',
+      ),
       if (status?.lastAccountPhone != null) ...[
         const SizedBox(height: 12),
         Row(
@@ -620,45 +525,6 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
           ],
         ),
       ],
-    ];
-  }
-
-  List<Widget> _bankAccountFields(ThemeData theme, ForwardingStatus? status) {
-    // The bank PIN lives on-device now, so "saved" is the native flag.
-    final hasSavedPin = status?.hasBankPin ?? false;
-    // The interval only governs auto-forward mode's timer (see the mobile form).
-    final isAuto = status?.mode == ForwardingMode.autoForward;
-    return [
-      TextFormField(
-        key: const ValueKey('bankAccountPin'),
-        controller: _bankPinController,
-        obscureText: !_showPin,
-        keyboardType: TextInputType.number,
-        decoration: InputDecoration(
-          labelText: 'Bank account PIN',
-          helperText: hasSavedPin
-              ? 'Saved. Used to authorise transfers to your bank account.'
-              : 'Used to authorise transfers to your bank account.',
-          helperMaxLines: 2,
-        ),
-        validator: (value) =>
-            (value == null || value.trim().isEmpty) ? 'Required' : null,
-      ),
-      _showPinToggle(),
-      if (isAuto) ...[
-        const SizedBox(height: 8),
-        _checkIntervalField(),
-      ],
-      const SizedBox(height: 12),
-      _InfoNote(
-        theme: theme,
-        text: isAuto
-            ? 'The balance sweep dials *800#, then deposits to your bank account by '
-                  'entering this PIN on the deposit menu. "Check every" sets how often it '
-                  'runs in auto-forward mode.'
-            : 'When a Zaad balance message arrives, the app deposits to your bank '
-                  'account by entering this PIN on the *800# deposit menu.',
-      ),
     ];
   }
 }

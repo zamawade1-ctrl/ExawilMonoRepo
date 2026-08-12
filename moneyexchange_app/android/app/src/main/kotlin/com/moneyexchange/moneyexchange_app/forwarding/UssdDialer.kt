@@ -141,7 +141,7 @@ object UssdDialer {
     private const val MAX_DIAL_ATTEMPTS = 3
 
     /** Settle before the first dial — lets the leftover-dialog clear run + radio breathe. */
-    private const val FIRST_SETTLE_MS = 350L
+    private const val FIRST_SETTLE_MS = 200L
 
     /** Longer settle before a retry, to give a busy radio / prior session time to clear. */
     private const val RETRY_SETTLE_MS = 1_500L

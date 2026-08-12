@@ -82,6 +82,17 @@ class ForwardingForegroundService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
         ensureHandler()
 
+        // Plan gate: an expired trial/paid plan does NO USSD work at all — no sweep,
+        // no balance check, no SMS-triggered forward, no timer tick — even with the
+        // app closed. Stay completely inert until Flutter pushes an active plan again
+        // (setPlanActive). ACTION_STOP is always honoured so teardown still works.
+        val requestedAction = intent?.action
+        if (requestedAction != ACTION_STOP && !ForwardingSettings(this).isPlanActive()) {
+            Log.i(TAG, "Plan expired/inactive — ignoring ${requestedAction ?: "start"} (no USSD).")
+            stopEverything()
+            return START_NOT_STICKY
+        }
+
         when (intent?.action) {
             ACTION_STOP -> stopEverything()
 
@@ -535,6 +546,23 @@ class ForwardingForegroundService : Service() {
         }
         val subscriptionId = settings.simSubscriptionId
 
+        // FAST manual bank sweep: skip the fresh *800# balance read and deposit the
+        // balance the app ALREADY knows (the leftover readout). A fresh read needs its
+        // own *800# session, and Zaad's balance screen is terminal (it ends the
+        // session with no way back to the menu — confirmed on-device), so a
+        // read-then-deposit sweep must dial *800# twice and pays the fixed ~10.5s Zaad
+        // PIN authentication TWICE (~28s total). Depositing the known leftover in a
+        // single session halves that (~15s). Only for a MANUAL bank sweep ("Run sweep")
+        // and only once we HAVE a known balance — the periodic auto-forward poller and
+        // the first-ever sweep still take the accurate fresh-read path below.
+        if (isManual &&
+            settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT &&
+            settings.lastLeftoverBalance != null
+        ) {
+            runFastBankSweep(settings, primary, subscriptionId)
+            return
+        }
+
         Log.i(TAG, "Starting balance sweep on sub=$subscriptionId (manual=$isManual).")
         // Phase 1 — balance check, identical for both methods: *800# → primary PIN →
         // menu option 1 → read balance + account number. The session's destination /
@@ -605,6 +633,58 @@ class ForwardingForegroundService : Service() {
     }
 
     /**
+     * Single-session manual bank sweep: forwards the whole-dollar floor of the
+     * balance the app already knows ([ForwardingSettings.lastLeftoverBalance]) via
+     * ONE `*800#` bank-deposit walk — no separate `*800#` balance read. This is the
+     * "fast Run sweep": it pays Zaad's ~10.5s PIN authentication once instead of
+     * twice (~15s instead of ~28s), at the cost of using the last-known balance
+     * rather than a freshly-read one.
+     *
+     * ## Why this is safe against a double-send
+     * On a successful send we IMMEDIATELY decrement the known balance by exactly the
+     * amount forwarded ([ForwardingSettings.lastLeftoverBalance] -= amount) and push
+     * it live. So a second Run sweep tapped right after can't re-forward the same
+     * money: the known balance already reflects the debit (and drops below \$1 once
+     * swept), and sweeps are serialized by [sweepLock] so the decrement always lands
+     * before the next one reads it. If the known value is somehow stale-HIGH (money
+     * spent outside the app), Zaad validates the amount against the real balance and
+     * rejects the deposit — no wrong transfer, just a failed sweep the user re-runs
+     * after a refresh. The result dialog's true remaining balance, if it carries one,
+     * still refines the readout via the a11y janitor.
+     */
+    private fun runFastBankSweep(settings: ForwardingSettings, primary: String, subscriptionId: Int) {
+        val known = settings.lastLeftoverBalance
+        val amount = computeForwardAmount(known)
+        if (amount == null) {
+            // Below \$1 (or unknown): nothing to forward. computeForwardAmount logged why.
+            return
+        }
+        val bankPin = settings.bankPin
+        if (bankPin == null) {
+            Log.w(TAG, "Fast bank sweep but no bank PIN stored; skipping.")
+            return
+        }
+        // Money leaving the account — log RECEIVED, paired with the FORWARDED event
+        // below, mirroring the fresh-read sweep so the dashboard reflects it.
+        TransactionStore.record(this, TransactionStore.TYPE_RECEIVED, amount.toDouble(), provider = "Zaad")
+        Log.i(TAG, "Fast bank sweep: forwarding known leftover \$$known → \$$amount (whole dollars); no *800# balance read.")
+
+        val ok = performBankSend(primary, bankPin, amount, subscriptionId)
+        recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok)
+
+        if (ok) {
+            // Debit the known balance by exactly what we sent so a repeat sweep can't
+            // double-forward it, and push it live to the leftover readout. The a11y
+            // janitor may later overwrite this with the result dialog's exact remaining
+            // balance — both converge on the post-forward figure.
+            val remaining = ((known ?: 0.0) - amount.toDouble()).coerceAtLeast(0.0)
+            settings.lastLeftoverBalance = remaining
+            settings.lastLeftoverAtMs = System.currentTimeMillis()
+            BalanceEvents.emit(remaining)
+        }
+    }
+
+    /**
      * Logs a FORWARDED event to the on-device ledger (the dashboard + Transactions
      * tab read it). [ok] is the send's success signal — whether the confirmation
      * PIN / bank confirm was actually driven — so a failed/timed-out cycle is
@@ -651,11 +731,12 @@ class ForwardingForegroundService : Service() {
     }
 
     /**
-     * Dials `*806*destination*amount*secondaryPin#` and blocks until the send is
-     * driven to completion: waits for the confirmation PIN to be auto-typed
-     * (SEND_PIN_DONE), then for the accessibility service to auto-close the
-     * "you sent…" result dialog (SEND_DONE). Shared by the sweep and the 898
-     * flow; the caller must have already armed the session's send step.
+     * Dials `*806*destination*amount*secondaryPin#` and blocks only until the
+     * confirmation PIN is auto-typed and the forward submitted (SEND_PIN_DONE) —
+     * NOT until the "you sent…" result dialog closes, which the IDLE-state janitor
+     * handles asynchronously so a completed forward isn't held up by cosmetics.
+     * Shared by the sweep and the 898 flow; the caller must have already armed the
+     * session's send step.
      */
     private fun performSend(destination: String, amount: String, secondaryPin: String, subscriptionId: Int): Boolean {
         if (!UssdDialer.dialSend(this, destination, amount, secondaryPin, subscriptionId)) {
@@ -664,13 +745,15 @@ class ForwardingForegroundService : Service() {
         }
 
         // SEND_PIN_DONE = the confirmation PIN was auto-typed and the forward
-        // submitted; that's our success signal. The later result-dialog close is
-        // best-effort cosmetics and must not flip a submitted forward to "failed".
+        // submitted; that's our success signal AND our completion point. We do NOT
+        // wait for the "you sent…" result dialog to render + auto-close: the money
+        // has already moved, and blocking on that cosmetic screen added a whole USSD
+        // round-trip (several seconds) to every forward. The IDLE-state janitor in
+        // UssdAccessibilityService dismisses that dialog — and reads the leftover
+        // balance off it — on its own accessibility events once we finish here.
         val submitted = awaitStep(UssdSession.Step.SEND_PIN_DONE)
         if (!submitted) {
             Log.w(TAG, "Send confirmation not completed within the window.")
-        } else if (!awaitStep(UssdSession.Step.SEND_DONE, RESULT_CLOSE_CAP_MS)) {
-            Log.w(TAG, "Result dialog did not appear/auto-close within ${RESULT_CLOSE_CAP_MS / 1000}s.")
         }
         UssdSession.finish()
         return submitted
@@ -679,9 +762,11 @@ class ForwardingForegroundService : Service() {
     /**
      * Bank-account forward: re-dials `*800#` and lets [UssdAccessibilityService]
      * walk the deposit menu (primary PIN → "5" → "2" → amount → comment → bank PIN
-     * → confirm "1"), then waits for the confirmation to submit and the result
-     * dialog to auto-close. The account PIN reuses the stored primary [pin]; the
-     * bank PIN is the customer's saved [ForwardingSettings.bankPin]. The session's
+     * → confirm "1"), then waits only for the confirmation to submit — not for the
+     * result dialog to close, which the IDLE-state janitor clears asynchronously so
+     * the forward completes as soon as the money moves. The account PIN reuses the
+     * stored primary [pin]; the bank PIN is the customer's saved
+     * [ForwardingSettings.bankPin]. The session's
      * bank step must already be armed by the caller via [UssdSession.beginBankSend]
      * — done here so the dial and the arm can't race.
      */
@@ -692,14 +777,18 @@ class ForwardingForegroundService : Service() {
             return false
         }
 
-        // BANK_CONFIRM_DONE = the deposit was confirmed/submitted; success signal.
-        // The bank walk has ~7 dialogs, so give the whole sequence a generous cap;
-        // a genuinely stuck step is still caught by the per-dialog window timeout.
+        // BANK_CONFIRM_DONE = the deposit was confirmed/submitted; that's our success
+        // signal AND our completion point. The bank walk has ~7 dialogs, so give the
+        // whole sequence a generous cap; a genuinely stuck step is still caught by the
+        // per-dialog window timeout. Once confirmed we STOP here: the money has moved,
+        // so we never block the cycle on the "successfully transferred… your balance
+        // is $X" result dialog. Waiting for it used to add a full USSD round-trip (plus
+        // close retries) — several seconds — to every bank forward. The IDLE-state
+        // janitor in UssdAccessibilityService dismisses that dialog and reads the
+        // leftover balance off it on its own accessibility events after we finish.
         val confirmed = awaitStep(UssdSession.Step.BANK_CONFIRM_DONE, BANK_AWAIT_CAP_MS)
         if (!confirmed) {
             Log.w(TAG, "Bank forward not confirmed within the window.")
-        } else if (!awaitStep(UssdSession.Step.BANK_DONE, RESULT_CLOSE_CAP_MS)) {
-            Log.w(TAG, "Bank result dialog did not appear/auto-close within ${RESULT_CLOSE_CAP_MS / 1000}s.")
         }
         UssdSession.finish()
         return confirmed
@@ -840,7 +929,13 @@ class ForwardingForegroundService : Service() {
 
         /** How long a single blocking wait for a step will poll before giving up. */
         private const val AWAIT_CAP_MS = 50_000L
-        private const val POLL_MS = 300L
+
+        /**
+         * Poll gap while the poller waits on a session step. Kept short so the
+         * instant a step completes (balance read, confirm submitted) the poller
+         * moves on with minimal detection lag — it costs only cheap volatile reads.
+         */
+        private const val POLL_MS = 100L
 
         /**
          * Ceiling for the whole multi-dialog bank deposit walk to reach the confirm
@@ -848,14 +943,6 @@ class ForwardingForegroundService : Service() {
          * a single stuck dialog still trips the per-window timeout well before this.
          */
         private const val BANK_AWAIT_CAP_MS = 120_000L
-
-        /**
-         * How long to wait after a send for the result dialog to appear and be
-         * auto-closed. Generous, since the USSD round-trip can take several
-         * seconds; we exit as soon as SEND_DONE is signalled, so this is only the
-         * ceiling for a slow/missing result.
-         */
-        private const val RESULT_CLOSE_CAP_MS = 15_000L
 
         /** Starts (or resumes) the periodic sweep poller. */
         fun start(context: Context) = send(context, ACTION_START)

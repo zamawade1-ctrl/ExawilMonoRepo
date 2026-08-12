@@ -43,14 +43,10 @@ class DashboardScreen extends ConsumerWidget {
           const SizedBox(height: 12),
           if (data.destinations.isEmpty)
             const _EmptyChart(message: 'No forwards in this range yet.')
-          else ...[
-            ForwardDestinationSplit(
-              mobile: data.mobileForward,
-              bank: data.bankForward,
-            ),
-            const SizedBox(height: 16),
+          else
+            // Bank-only app now — the mobile/bank split was removed; this shows
+            // the bank-account forward totals for the range.
             DestinationsBreakdown(destinations: data.destinations),
-          ],
           if (data.forwardedCount > 0) ...[
             const SizedBox(height: 24),
             _SectionTitle('When money moves', subtitle: data.label),

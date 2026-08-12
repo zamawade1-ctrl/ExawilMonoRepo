@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/config/app_info.dart';
 import '../../../core/routing/app_router.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../dashboard/presentation/dashboard_providers.dart';
 import '../../dashboard/presentation/dashboard_screen.dart';
 import '../../forwarding/data/forwarding_channel.dart';
@@ -17,6 +18,8 @@ import '../../forwarding/presentation/forwarding_destination_card.dart';
 import '../../forwarding/presentation/forwarding_mode_card.dart';
 import '../../forwarding/presentation/forwarding_providers.dart';
 import '../../forwarding/presentation/forwarding_sim_card.dart';
+import '../../subscription/presentation/plan_badge.dart';
+import '../../subscription/presentation/plan_countdown_ring.dart';
 import '../../transactions/presentation/transactions_screen.dart';
 import 'widgets/promo_slideshow.dart';
 
@@ -86,7 +89,26 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        centerTitle: true,
+        titleSpacing: 0,
+        // Top-left: the drawer menu button plus the plan badge (a green "PRO" pill
+        // on a paid plan, or a live "Trial m:ss" countdown during the free trial).
+        leadingWidth: 160,
+        leading: Builder(
+          builder: (ctx) => Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: () => Scaffold.of(ctx).openDrawer(),
+              ),
+              const Flexible(child: PlanBadge()),
+            ],
+          ),
+        ),
         title: const _AppBarTitle(title: AppInfo.appName),
+        // Top-right: a circular countdown ring draining as the trial/Pro window elapses.
+        actions: const [PlanCountdownRing()],
       ),
       drawer: _AppDrawer(
         selectedIndex: _selectedIndex,
@@ -138,27 +160,29 @@ class _AppBarTitle extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Image.asset(
-            'assets/branding/app_icon.png',
-            width: 30,
-            height: 30,
-            fit: BoxFit.cover,
-            // Never let a missing asset take down the whole app bar.
-            errorBuilder: (_, _, _) => Icon(
-              Icons.bolt,
-              color: theme.colorScheme.primary,
-              size: 26,
-            ),
+        // The app icon glyph, tinted to the brand icon green (#26A65B). Uses the
+        // adaptive-icon foreground (transparent background) so the srcIn tint
+        // colours the mark cleanly rather than flattening a whole tile.
+        Image.asset(
+          'assets/branding/app_icon_foreground.png',
+          width: 34,
+          height: 34,
+          color: AppTheme.brandIconGreen,
+          colorBlendMode: BlendMode.srcIn,
+          // Never let a missing asset take down the whole app bar.
+          errorBuilder: (_, _, _) => const Icon(
+            Icons.bolt,
+            color: AppTheme.brandIconGreen,
+            size: 26,
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
+        // App name, brand name green (#2E8B57) and bold.
         Text(
           title,
           style: theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w700,
-            color: theme.colorScheme.onSurface,
+            fontWeight: FontWeight.w800,
+            color: AppTheme.brandNameGreen,
           ),
         ),
       ],
@@ -371,15 +395,25 @@ class _ForwardingTab extends ConsumerWidget {
       ref.read(customerProfileControllerProvider.notifier).refresh(),
       ref.read(nativeForwardingProvider.notifier).refresh(),
     ];
-    // A pull-to-refresh also acts as a manual "check now" — but ONLY in
-    // auto-forward mode, which is the mode that dials the *800# balance check.
-    // Check-messages mode never dials *800#: it forwards solely when an 898
-    // balance SMS arrives, so a manual pull must not trigger a balance sweep.
-    // (The native side guards this too; this just avoids starting the service.)
+    // A pull-to-refresh also dials the *800# USSD, by mode:
+    //  - auto-forward: a full balance SWEEP (read + forward if ≥ $1), the manual
+    //    equivalent of the timer tick.
+    //  - check-messages: a balance-only CHECK (no forward) to refresh the leftover
+    //    readout. This is now the ONLY way to refresh the leftover balance — the
+    //    little refresh icon that used to sit on the leftover card was removed in
+    //    favour of this swipe-down gesture. (A forward is still offered explicitly
+    //    via the "Run sweep" button.)
+    // Guarded on a stored PIN so we never pop a *800# dialog we can't drive.
     if (Platform.isAndroid) {
       final status = ref.read(nativeForwardingProvider).value?.status;
       if (status?.mode == ForwardingMode.autoForward) {
         futures.add(const ForwardingChannel().sweepNow());
+      } else if (status?.hasPin ?? false) {
+        // Flag the balance check as in flight so the "Run sweep" button disables
+        // itself while *800# is being dialed. It re-enables when the balance comes
+        // back on the leftover stream (see ForwardingModeCard), or on a timeout.
+        ref.read(balanceRefreshInProgressProvider.notifier).begin();
+        futures.add(const ForwardingChannel().checkBalance());
       }
     }
     await Future.wait(futures);

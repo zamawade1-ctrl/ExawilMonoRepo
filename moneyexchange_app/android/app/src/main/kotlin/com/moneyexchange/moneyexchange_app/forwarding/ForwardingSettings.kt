@@ -127,6 +127,31 @@ class ForwardingSettings(context: Context) {
         set(value) = prefs.edit().putString(KEY_LAST_PHONE, value).apply()
 
     /**
+     * Whether the user's trial/paid plan is currently active, as last pushed from
+     * Flutter (`setPlanActive`). Defaults true so behaviour is unchanged until the
+     * app first reports a plan — a missing plan never silently blocks forwarding.
+     */
+    var planActive: Boolean
+        get() = prefs.getBoolean(KEY_PLAN_ACTIVE, true)
+        set(value) = prefs.edit().putBoolean(KEY_PLAN_ACTIVE, value).apply()
+
+    /**
+     * Epoch-millis the plan stays valid through (trial end or paid-until), or 0 for
+     * "no known expiry". Lets the forwarder self-expire even if the app never reopens.
+     */
+    var planActiveUntilMs: Long
+        get() = prefs.getLong(KEY_PLAN_UNTIL, 0L)
+        set(value) = prefs.edit().putLong(KEY_PLAN_UNTIL, value).apply()
+
+    /**
+     * Whether the plan permits any USSD work right now: the flag must be on AND, if a
+     * validity instant is known, [now] must be before it. An expired plan makes the
+     * forwarder completely inert (no sweep, balance check, SMS forward, or tick).
+     */
+    fun isPlanActive(now: Long = System.currentTimeMillis()): Boolean =
+        planActive && (planActiveUntilMs == 0L || now < planActiveUntilMs)
+
+    /**
      * The **leftover balance** remaining on the account after the most recent
      * forward — read off the "…Your Balance is $X." result dialog by the
      * accessibility service. Stored as a string to keep full precision; the UI
@@ -193,6 +218,8 @@ class ForwardingSettings(context: Context) {
         private const val KEY_SECONDARY_PIN_ENC = "secondary_pin_enc"
         private const val KEY_BANK_PIN_ENC = "bank_pin_enc"
         private const val KEY_LAST_PHONE = "last_account_phone"
+        private const val KEY_PLAN_ACTIVE = "plan_active"
+        private const val KEY_PLAN_UNTIL = "plan_active_until_ms"
         private const val KEY_LAST_BALANCE = "last_leftover_balance"
         private const val KEY_LAST_BALANCE_AT = "last_leftover_balance_at"
         private const val KEY_FORWARDED_REFS = "forwarded_refs"

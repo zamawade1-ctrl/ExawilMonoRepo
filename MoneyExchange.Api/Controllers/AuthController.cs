@@ -62,6 +62,24 @@ public class AuthController : ApiControllerBase
         return HandleResponse(response);
     }
 
+    // POST: api/auth/password  — the signed-in user changes their own password (current + new).
+    [Authorize]
+    [HttpPost("password")]
+    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordDto dto)
+    {
+        if (!TryGetAuthenticatedUserId(out var userId)) return Forbid();
+        return HandleResponse(await _userAuthRepository.ChangePasswordAsync(userId, dto));
+    }
+
+    // POST: api/auth/pin-enabled  — turn the app-lock PIN requirement on or off (returns a fresh session).
+    [Authorize]
+    [HttpPost("pin-enabled")]
+    public async Task<IActionResult> SetPinEnabled([FromBody] SetPinEnabledDto dto)
+    {
+        if (!TryGetAuthenticatedUserId(out var userId)) return Forbid();
+        return HandleResponse(await _userAuthRepository.SetPinEnabledAsync(userId, dto.Enabled));
+    }
+
     // DELETE: api/auth/me
     // Permanently deletes the signed-in customer's account and all associated data.
     // Required by the Google Play / App Store account-deletion policy for publishing.

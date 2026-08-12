@@ -1,34 +1,29 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
-/// One promotional slide: an exchange service and the short number customers
-/// dial / send to.
+import '../../../../core/config/app_info.dart';
+
+/// One promotional slide advertising an app feature/benefit — no third-party
+/// exchange numbers, just what e-Xawil does for the user.
 class _PromoSlide {
   const _PromoSlide({
     required this.title,
-    required this.service,
-    required this.number,
+    required this.subtitle,
     required this.gradient,
     required this.icon,
   });
 
   final String title;
-  final String service;
-  final String number;
+  final String subtitle;
   final List<Color> gradient;
   final IconData icon;
 }
 
-/// Auto-advancing promo carousel shown at the top of the Home tab. Advertises
-/// the exchange short-numbers customers use to top up / send, one slide each,
-/// with a page-dot indicator. Tapping a slide copies its number to the
-/// clipboard so it's easy to paste into the dialer.
-///
-/// The numbers are the product's own advertised exchange lines:
-///   - Telesom Exchange: 313933
-///   - e-Dahab:          654480003
+/// Auto-advancing promo carousel shown at the top of the Home tab. It advertises
+/// **the app itself** — its automatic-forwarding value props — one slide each,
+/// with a page-dot indicator. It deliberately shows NO exchange short-numbers or
+/// third-party services; it's pure app promotion.
 class PromoSlideshow extends StatefulWidget {
   const PromoSlideshow({super.key});
 
@@ -39,18 +34,22 @@ class PromoSlideshow extends StatefulWidget {
 class _PromoSlideshowState extends State<PromoSlideshow> {
   static const _slides = <_PromoSlide>[
     _PromoSlide(
-      title: 'Telesom Exchange',
-      service: 'Ka sarifo sariflaha gudaal',
-      number: '313933',
-      gradient: [Color(0xFF2FA84F), Color(0xFF1B7E39)],
-      icon: Icons.currency_exchange,
+      title: 'e-Xawil auto-forwarding',
+      subtitle: 'Your Zaad money is forwarded to your destination automatically.',
+      gradient: [Color(0xFF26A65B), Color(0xFF1B7E39)],
+      icon: Icons.autorenew,
     ),
     _PromoSlide(
-      title: 'e-Dahab',
-      service: 'Ka sarifo sariflaha gudaal',
-      number: '654480003',
-      gradient: [Color(0xFF1E6BB8), Color(0xFF0E4C8A)],
-      icon: Icons.account_balance_wallet,
+      title: 'Set it and forget it',
+      subtitle: 'We watch for incoming money and send it on for you — hands-free.',
+      gradient: [Color(0xFF2E8B57), Color(0xFF176B44)],
+      icon: Icons.bolt,
+    ),
+    _PromoSlide(
+      title: 'Private by design',
+      subtitle: 'Your PINs stay encrypted on your phone — never on a server.',
+      gradient: [Color(0xFF2FA84F), Color(0xFF1E7E3C)],
+      icon: Icons.lock_outline,
     ),
   ];
 
@@ -87,17 +86,6 @@ class _PromoSlideshowState extends State<PromoSlideshow> {
     });
   }
 
-  Future<void> _copyNumber(_PromoSlide slide) async {
-    await Clipboard.setData(ClipboardData(text: slide.number));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${slide.title} number ${slide.number} copied'),
-        duration: const Duration(seconds: 2),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -108,10 +96,7 @@ class _PromoSlideshowState extends State<PromoSlideshow> {
             controller: _controller,
             itemCount: _slides.length,
             onPageChanged: (i) => setState(() => _index = i),
-            itemBuilder: (_, i) => _PromoCard(
-              slide: _slides[i],
-              onTap: () => _copyNumber(_slides[i]),
-            ),
+            itemBuilder: (_, i) => _PromoCard(slide: _slides[i]),
           ),
         ),
         const SizedBox(height: 12),
@@ -139,89 +124,92 @@ class _PromoSlideshowState extends State<PromoSlideshow> {
 }
 
 class _PromoCard extends StatelessWidget {
-  const _PromoCard({required this.slide, required this.onTap});
+  const _PromoCard({required this.slide});
 
   final _PromoSlide slide;
-  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 2),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          onTap: onTap,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(20),
-          child: Ink(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: slide.gradient,
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: slide.gradient,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Brand header: the app icon + name, so every banner carries
+                    // the e-Xawil identity.
+                    Row(
                       children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.asset(
+                            'assets/branding/app_icon.png',
+                            width: 22,
+                            height: 22,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => const Icon(
+                              Icons.bolt,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
                         Text(
-                          slide.title,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            color: Colors.white,
+                          AppInfo.appName,
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.95),
                             fontWeight: FontWeight.w700,
+                            letterSpacing: 0.3,
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          slide.service,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: Colors.white.withValues(alpha: 0.9),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Text(
-                              slide.number,
-                              style: theme.textTheme.headlineSmall?.copyWith(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 1.5,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Icon(
-                              Icons.copy_rounded,
-                              size: 16,
-                              color: Colors.white.withValues(alpha: 0.85),
-                            ),
-                          ],
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.18),
-                      shape: BoxShape.circle,
+                    const SizedBox(height: 10),
+                    Text(
+                      slide.title,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                    child: Icon(slide.icon, color: Colors.white, size: 30),
-                  ),
-                ],
+                    const SizedBox(height: 4),
+                    Text(
+                      slide.subtitle,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.92),
+                        height: 1.25,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
+              const SizedBox(width: 12),
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.18),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(slide.icon, color: Colors.white, size: 30),
+              ),
+            ],
           ),
         ),
       ),

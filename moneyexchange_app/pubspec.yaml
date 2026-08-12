@@ -40,10 +40,13 @@ dependencies:
   dio: ^5.11.0
   flutter_secure_storage: ^10.3.1
   shared_preferences: ^2.5.5
+  local_auth: ^2.3.0
   intl: ^0.20.3
   url_launcher: ^6.3.1
   package_info_plus: ^8.1.2
   fl_chart: ^1.2.0
+  device_info_plus: ^11.2.0
+  crypto: ^3.0.6
 
 dev_dependencies:
   flutter_test:
@@ -78,6 +81,19 @@ flutter:
 
   assets:
     - assets/branding/app_icon.png
+    - assets/branding/app_icon_foreground.png
+
+  # Product typeface — TT Norms Pro (commercial licence). The font files are NOT
+  # committed (see assets/fonts/README.md). Drop the licensed files in and
+  # uncomment this block to activate; AppTheme.fontFamily is already wired up.
+  # fonts:
+  #   - family: TT Norms Pro
+  #     fonts:
+  #       - asset: assets/fonts/TTNormsPro-Regular.otf
+  #       - asset: assets/fonts/TTNormsPro-Medium.otf
+  #         weight: 500
+  #       - asset: assets/fonts/TTNormsPro-Bold.otf
+  #         weight: 700
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

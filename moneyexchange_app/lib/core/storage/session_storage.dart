@@ -14,6 +14,7 @@ class SessionStorage {
 
   static const _accessTokenKey = 'access_token';
   static const _userProfileKey = 'user_profile';
+  static const _planKey = 'plan_snapshot';
 
   final FlutterSecureStorage _storage;
 
@@ -36,6 +37,11 @@ class SessionStorage {
     );
   }
 
+  /// Rewrites only the cached profile, leaving the stored token untouched (used
+  /// when a profile field changes mid-session, e.g. the user sets their app PIN).
+  Future<void> updateUserProfile(Map<String, dynamic> userProfileJson) =>
+      _storage.write(key: _userProfileKey, value: jsonEncode(userProfileJson));
+
   Future<String?> readAccessToken() => _storage.read(key: _accessTokenKey);
 
   Future<Map<String, dynamic>?> readUserProfile() async {
@@ -44,8 +50,20 @@ class SessionStorage {
     return jsonDecode(raw) as Map<String, dynamic>;
   }
 
+  /// Caches the latest plan snapshot (trial/plan timestamps) so the trial
+  /// countdown + expiry gate survive a cold start and keep working offline.
+  Future<void> savePlan(Map<String, dynamic> planJson) =>
+      _storage.write(key: _planKey, value: jsonEncode(planJson));
+
+  Future<Map<String, dynamic>?> readPlan() async {
+    final raw = await _storage.read(key: _planKey);
+    if (raw == null) return null;
+    return jsonDecode(raw) as Map<String, dynamic>;
+  }
+
   Future<void> clear() async {
     await _storage.delete(key: _accessTokenKey);
     await _storage.delete(key: _userProfileKey);
+    await _storage.delete(key: _planKey);
   }
 }

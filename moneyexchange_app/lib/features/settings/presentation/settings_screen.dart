@@ -4,16 +4,34 @@ import 'package:go_router/go_router.dart';
 
 import '../../auth/presentation/auth_providers.dart';
 import '../../auth/presentation/delete_account.dart';
+import '../../security/presentation/change_pin_screen.dart';
+import 'update_password_screen.dart';
 import '../../../core/routing/app_router.dart';
 import '../../../core/theme/theme_mode_controller.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
+  Future<void> _togglePin(BuildContext context, WidgetRef ref, bool enable) async {
+    try {
+      await ref.read(authControllerProvider.notifier).setPinEnabled(enable);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(enable ? 'PIN enabled — set your PIN' : 'App PIN turned off')),
+        );
+      }
+    } on AuthException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authControllerProvider).value;
     final theme = Theme.of(context);
+    final pinEnabled = user?.pinEnabled ?? true;
     // Reflects the effective (resolved) brightness, whether it came from an
     // explicit choice or the system default.
     final isDark = theme.brightness == Brightness.dark;
@@ -27,7 +45,7 @@ class SettingsScreen extends ConsumerWidget {
                 ? CircleAvatar(backgroundImage: NetworkImage(user!.profilePictureUrl!))
                 : const CircleAvatar(child: Icon(Icons.person)),
             title: Text(user?.fullName ?? ''),
-            subtitle: Text(user?.email ?? ''),
+            subtitle: Text(user?.phoneNumber ?? ''),
           ),
           const Divider(height: 1),
           SwitchListTile(
@@ -36,6 +54,42 @@ class SettingsScreen extends ConsumerWidget {
             value: isDark,
             onChanged: (value) => ref.read(themeModeControllerProvider.notifier).setDarkMode(value),
           ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.key_outlined),
+            title: const Text('Update password'),
+            subtitle: const Text('Change your account sign-in password'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const UpdatePasswordScreen()),
+            ),
+          ),
+          const Divider(height: 1),
+          SwitchListTile(
+            secondary: const Icon(Icons.pin_outlined),
+            title: const Text('App lock PIN'),
+            subtitle: Text(
+              pinEnabled
+                  ? 'A 6-digit PIN is required each time you open the app'
+                  : 'The app opens without a PIN',
+            ),
+            value: pinEnabled,
+            onChanged: (v) => _togglePin(context, ref, v),
+          ),
+          if (pinEnabled && (user?.hasAppPin ?? false))
+            ListTile(
+              leading: const Icon(Icons.password_outlined),
+              title: const Text('Change app PIN'),
+              subtitle: const Text(
+                'Update the 6-digit PIN you enter to open the app',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const ChangePinScreen(),
+                ),
+              ),
+            ),
           const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.info_outline),

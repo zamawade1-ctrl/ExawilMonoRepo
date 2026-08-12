@@ -46,6 +46,14 @@ class UssdAccessibilityService : AccessibilityService() {
     /** Janitor dismiss attempts on the current dialog; reset once it's gone. Gates BACK. */
     private var janitorAttempts = 0
 
+    /**
+     * Guards the janitor's leftover-balance read so a completed forward's result
+     * dialog is captured once, not on every frame it lingers. Reset (with
+     * [janitorAttempts]) whenever the dialog is gone, so the next forward's result
+     * dialog is captured afresh.
+     */
+    private var janitorLeftoverCaptured = false
+
     /** Guards [closeResultDialog] so the leftover balance is captured once per step. */
     private var leftoverCaptured = false
 
@@ -102,7 +110,7 @@ class UssdAccessibilityService : AccessibilityService() {
         if (isMmiErrorDialog(collectText(root))) {
             // Tap OK only (no BACK) — the error dialog is a standard AlertDialog whose
             // OK reliably dismisses it, and BACK here could close our app behind it.
-            dismissDialog(root, allowBack = false)
+            dismissDialog(root)
             UssdSession.signalMmiError()
             Log.w(TAG, "MMI-error dialog dismissed; flagged for re-dial (step=${UssdSession.step}).")
             return
@@ -334,16 +342,13 @@ class UssdAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Terminal result screen is still showing. Dismiss it (tap OK + BACK),
-        // throttled so we don't spam faster than the system can animate the dialog
-        // away, and keep retrying on later frames until the dismiss button
-        // disappears above.
+        // Terminal result screen is still showing. Tap its OK, throttled so we don't
+        // spam faster than the system can animate the dialog away, and keep re-tapping
+        // OK on later frames until the dismiss button disappears above. Never BACK on
+        // top of a tap (see [dismissDialog]) so the app can't be closed.
         val now = SystemClock.elapsedRealtime()
         if (now - lastCloseAtMs < CLOSE_RETRY_GAP_MS) return
-        // First attempt taps OK only; BACK is allowed only from the 2nd attempt on,
-        // i.e. once an OK tap has provably failed to remove the dialog — so a stray
-        // BACK can never fall through and close our own app.
-        dismissDialog(root, allowBack = closeAttempts > 0)
+        dismissDialog(root)
         lastCloseAtMs = now
         closeAttempts++
         Log.i(TAG, "Dismissed the result dialog (attempt $closeAttempts).")
@@ -375,21 +380,40 @@ class UssdAccessibilityService : AccessibilityService() {
     private fun dismissLeftoverResultDialog(root: AccessibilityNodeInfo) {
         // Not one of our dialogs (or it's gone): reset the retry budget so the next
         // real dialog starts fresh with an OK-only tap (no speculative BACK).
-        if (findEditable(root) != null) { janitorAttempts = 0; return }
-        if (findLabeled(root, DISMISS_LABELS) == null) { janitorAttempts = 0; return }
+        if (findEditable(root) != null) { janitorAttempts = 0; janitorLeftoverCaptured = false; return }
+        if (findLabeled(root, DISMISS_LABELS) == null) { janitorAttempts = 0; janitorLeftoverCaptured = false; return }
         val text = collectText(root)
         // Also clear a lingering "Connection problem or invalid MMI code" error dialog:
         // like a result dialog, a stuck error dialog blocks the next dial.
         if (!isForwardingResultDialog(text) && !isMmiErrorDialog(text)) {
             janitorAttempts = 0
+            janitorLeftoverCaptured = false
             return
+        }
+
+        // A completed forward's result dialog ("…successfully transferred… Your
+        // Balance is $X.") is now handled here rather than inside the (already
+        // finished) sweep cycle — the forward no longer blocks on this close. So
+        // read the leftover balance off it before dismissing, once per dialog, and
+        // push it live to the sweep card exactly as the in-cycle close used to.
+        if (!janitorLeftoverCaptured && isForwardingResultDialog(text)) {
+            BalanceParser.lastBalanceUsd(text)?.let { leftover ->
+                janitorLeftoverCaptured = true
+                ForwardingSettings(this).apply {
+                    lastLeftoverBalance = leftover
+                    lastLeftoverAtMs = System.currentTimeMillis()
+                }
+                BalanceEvents.emit(leftover)
+                Log.i(TAG, "Janitor captured leftover balance \$$leftover from a result dialog.")
+            }
         }
 
         val now = SystemClock.elapsedRealtime()
         if (now - lastJanitorCloseMs < CLOSE_RETRY_GAP_MS) return
         lastJanitorCloseMs = now
-        // OK-only on the first attempt; BACK only if it's still up on a later one.
-        dismissDialog(root, allowBack = janitorAttempts > 0)
+        // Tap OK; never BACK on top of a tap (see [dismissDialog]) so clearing the
+        // leftover dialog can't fall through and close the app the user is viewing.
+        dismissDialog(root)
         janitorAttempts++
         Log.i(TAG, "Janitor dismissed a leftover forwarding/error dialog.")
     }
@@ -409,20 +433,28 @@ class UssdAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Dismisses a terminal result dialog. PREFERS tapping the OK/close button
-     * (climbing to a clickable ancestor when the label node itself isn't clickable),
-     * because a button tap only ever affects the dialog. BACK is used sparingly, as a
-     * fallback: Samsung's system USSD dialog sometimes ignores the tap, but BACK is
-     * dangerous — once the dialog is gone, a stray BACK falls through to the app
-     * behind it and can CLOSE our own app (the "app closes when a forward finishes"
-     * bug). So we only press BACK when [allowBack] (a retry, where a prior OK tap
-     * provably left the dialog up) or when there's no clickable OK to tap at all —
-     * never speculatively alongside a successful tap.
+     * Dismisses a terminal result dialog by tapping its OK/close button (climbing to
+     * a clickable ancestor when the label node itself isn't clickable). A button tap
+     * only ever affects the dialog, so it is always safe.
+     *
+     * We DELIBERATELY never issue the global BACK action alongside an OK tap. BACK is
+     * dangerous: the instant the OK tap removes the dialog, a BACK falls through to
+     * whatever is behind it — our own app — and closes/backgrounds it (the "app
+     * closes when a forward finishes" bug; the app must stay visible until the user
+     * themselves leaves it). So BACK is used ONLY as a last resort when there is no
+     * clickable OK to tap at all — and the caller only invokes this while a dismiss
+     * button is present, so at that point the dialog is provably still up and BACK
+     * targets the dialog, not our app. When an OK tap doesn't clear it, we simply
+     * re-tap OK on the next frame (the caller's throttled retry loop) rather than
+     * ever pressing BACK on top of a tap.
      */
-    private fun dismissDialog(root: AccessibilityNodeInfo, allowBack: Boolean) {
+    private fun dismissDialog(root: AccessibilityNodeInfo) {
         val okButton = clickableSelfOrAncestor(findLabeled(root, DISMISS_LABELS))
-        okButton?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        if (allowBack || okButton == null) performGlobalAction(GLOBAL_ACTION_BACK)
+        if (okButton != null) {
+            okButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        } else {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        }
     }
 
     /** Walks up from [node] to the nearest clickable node (itself included), or null. */
@@ -515,7 +547,7 @@ class UssdAccessibilityService : AccessibilityService() {
         )
 
         /** Min gap between dismiss attempts in [closeResultDialog], to let the dialog animate away. */
-        private const val CLOSE_RETRY_GAP_MS = 700L
+        private const val CLOSE_RETRY_GAP_MS = 400L
 
         /** Give up closing after this many dismiss attempts (poller timeout is the final backstop). */
         private const val MAX_CLOSE_ATTEMPTS = 12

@@ -50,6 +50,11 @@ class SmsReceiver : BroadcastReceiver() {
             Log.d(TAG, "Money SMS seen but forwarding not fully configured/enabled; skipping.")
             return
         }
+        // Plan gate: an expired trial/plan does nothing — no check-messages forward.
+        if (!settings.isPlanActive()) {
+            Log.i(TAG, "Money SMS seen but plan expired/inactive; skipping (no USSD).")
+            return
+        }
 
         when (settings.mode) {
             ForwardingMode.AUTO_FORWARD -> handleAutoForward(context, sender, body)

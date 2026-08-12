@@ -23,4 +23,13 @@ public interface IUserAuthRepository
     /// Required for app-store publishing (Google Play / App Store account-deletion policy).
     /// </summary>
     Task<ServiceResponse<bool>> DeleteAccountAsync(int userId);
+
+    /// <summary>Changes the signed-in user's own password (verifies the current one first).</summary>
+    Task<ServiceResponse<bool>> ChangePasswordAsync(int userId, ChangePasswordDto dto);
+
+    /// <summary>
+    /// Turns the app-lock PIN requirement on or off for the signed-in user. Turning it off clears any
+    /// stored PIN so the app opens without a lock; the client is expected to clear its local copy too.
+    /// </summary>
+    Task<ServiceResponse<UserAuthResponseDto>> SetPinEnabledAsync(int userId, bool enabled);
 }

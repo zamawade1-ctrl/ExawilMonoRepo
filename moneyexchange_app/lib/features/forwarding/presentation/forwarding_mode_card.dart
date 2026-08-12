@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -25,8 +27,29 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
   bool _initFromNative = false;
   bool _saving = false;
 
+  /// True while a manual "Run sweep" is dialing/forwarding — drives the button's
+  /// "Running…" label + disabled state. Cleared when the sweep reports a fresh
+  /// balance on the leftover stream (its completion signal) or [_sweepTimeout] fires.
+  bool _sweeping = false;
+  Timer? _sweepTimeout;
+
+  @override
+  void dispose() {
+    _sweepTimeout?.cancel();
+    super.dispose();
+  }
+
   static String _modeName(ForwardingMode mode) =>
       mode == ForwardingMode.autoForward ? 'Auto forward' : 'Check messages';
+
+  /// Selecting a mode card IS the action now (there's no Save button): it turns
+  /// the chosen mode on immediately and pops the success dialog. Tapping the mode
+  /// that's already active just re-confirms it. Ignored while a save is in flight.
+  Future<void> _selectMode(ForwardingMode mode) async {
+    if (_saving) return;
+    setState(() => _selectedMode = mode);
+    await _save();
+  }
 
   Future<void> _save() async {
     setState(() => _saving = true);
@@ -36,12 +59,16 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
           .saveMode(mode: _selectedMode, enabled: true);
       if (!mounted) return;
       final isAuto = _selectedMode == ForwardingMode.autoForward;
+      // Stamp the activation time into the success message so the user can see
+      // exactly when this mode went live.
+      final activatedAt = TimeOfDay.now().format(context);
+      final detail = isAuto
+          ? 'Auto forward mode is enabled. Your Zaad balance is checked on a timer and forwarded automatically.'
+          : 'Check message mode is activated. Your balance is checked and forwarded whenever a Zaad money-in message arrives.';
       await showForwardingSuccessDialog(
         context,
         title: '${_modeName(_selectedMode)} enabled',
-        message: isAuto
-            ? 'Auto forward mode is enabled. Your Zaad balance is checked on a timer and forwarded automatically.'
-            : 'Check message mode is activated. Your balance is checked and forwarded whenever a Zaad money-in message arrives.',
+        message: '$detail\n\nActivated at $activatedAt.',
       );
       // Auto forward relies on an exact timer that Android suspends in Doze
       // (screen off / locked at night) unless the app is battery-exempt. Nudge
@@ -69,38 +96,67 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
     }
   }
 
-  Future<void> _turnOff() async {
-    setState(() => _saving = true);
-    try {
-      await ref
-          .read(nativeForwardingProvider.notifier)
-          .saveMode(mode: _selectedMode, enabled: false);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Auto-forwarding turned off.')),
-      );
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
   /// Runs one balance-sweep cycle on demand (dial *800#, read balance, forward if
-  /// ≥ $1). Only offered in check-messages mode, where there's no timer. The
-  /// leftover-balance readout beside it updates a few seconds later once the
-  /// result dialog is read, so we re-pull the native status then.
+  /// ≥ $1) — a manual auto-forward. Offered in check-messages mode, where there's
+  /// no timer, so the user can trigger a full sweep + forward by hand. While it
+  /// runs, the button shows "Running…" and is disabled ([_sweeping]); it clears when
+  /// the fresh balance lands on the leftover stream, or a safety timeout fires.
   Future<void> _runSweep() async {
     final messenger = ScaffoldMessenger.of(context);
+    // Run sweep is a no-op natively unless forwarding is switched on AND fully
+    // configured (the native side gates on isReady()). Silently doing nothing is
+    // confusing — if it isn't ready, say why instead of firing a dead sweep.
+    final status = ref.read(nativeForwardingProvider).value?.status;
+    if (status != null && !status.fullyReady) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            status.enabled
+                ? 'Finish forwarding setup first, then run a sweep.'
+                : 'Turn forwarding on first — tap Save, then run a sweep.',
+          ),
+        ),
+      );
+      return;
+    }
+    // Below $1 there's nothing to forward (the native sweep floors at $1), so don't
+    // enter the "Running…" state for a no-op — tell the user instead. Uses the same
+    // balance the readout shows (and that the native fast sweep will act on).
+    final known =
+        ref.read(leftoverBalanceStreamProvider).value ??
+        status?.lastLeftoverBalance;
+    if (known != null && known < 1.0) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Balance is below \$1.00 — nothing to sweep.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _sweeping = true);
+    // Safety backstop: clear the running state even if no balance ever comes back
+    // (a failed/again-below-$1 sweep), so the button can't stay stuck on "Running…".
+    _sweepTimeout?.cancel();
+    _sweepTimeout = Timer(const Duration(seconds: 30), () {
+      if (mounted) setState(() => _sweeping = false);
+    });
     try {
       await const ForwardingChannel().sweepNow();
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text('Balance sweep started')),
+        const SnackBar(content: Text('Running the sweep…')),
       );
-      Future<void>.delayed(const Duration(seconds: 8), () {
+      // The leftover readout updates live via the balance stream the moment the
+      // forward completes; this delayed status re-pull is a fallback, timed to land
+      // after a single-session fast sweep (~15s) has finished.
+      Future<void>.delayed(const Duration(seconds: 16), () {
         if (mounted) ref.read(nativeForwardingProvider.notifier).refresh();
       });
     } on PlatformException {
       if (mounted) {
+        setState(() => _sweeping = false);
+        _sweepTimeout?.cancel();
         messenger.showSnackBar(
           const SnackBar(content: Text('Could not start the sweep')),
         );
@@ -174,6 +230,21 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
     final streamedLeftover = ref.watch(leftoverBalanceStreamProvider).value;
     final leftover = streamedLeftover ?? status?.lastLeftoverBalance;
 
+    // While a pull-to-refresh is dialing the *800# balance check, the Run sweep
+    // button is disabled (below). A fresh balance landing on the stream is the "done"
+    // signal for BOTH a pull-to-refresh and a manual sweep, so clear both busy states
+    // on it: the refresh in-progress flag and the local [_sweeping] "Running…" state.
+    final refreshingBalance = ref.watch(balanceRefreshInProgressProvider);
+    ref.listen<AsyncValue<double>>(leftoverBalanceStreamProvider, (_, next) {
+      next.whenData((_) {
+        ref.read(balanceRefreshInProgressProvider.notifier).complete();
+        if (_sweeping) {
+          _sweepTimeout?.cancel();
+          setState(() => _sweeping = false);
+        }
+      });
+    });
+
     // Seed the local selection from the saved native state once it loads.
     if (status != null && !_initFromNative) {
       _selectedMode = status.mode;
@@ -205,66 +276,63 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
           style: theme.textTheme.titleMedium,
         ),
         const SizedBox(height: 12),
-        SegmentedButton<ForwardingMode>(
-          // Check messages leads (left) and is the default; auto forward is the
-          // timer-based alternative on the right.
-          segments: const [
-            ButtonSegment(
-              value: ForwardingMode.messageCheck,
-              label: Text('Check messages'),
-              icon: Icon(Icons.sms_outlined),
-            ),
-            ButtonSegment(
-              value: ForwardingMode.autoForward,
-              label: Text('Auto forward'),
-              icon: Icon(Icons.autorenew),
-            ),
-          ],
-          selected: {_selectedMode},
-          onSelectionChanged: _saving
-              ? null
-              : (selection) => setState(() => _selectedMode = selection.first),
-        ),
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton(
-                onPressed: _saving ? null : _save,
-                child: _saving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Save'),
+        // Two side-by-side radio cards: the selected one fills green with white
+        // text; the other stays neutral. Check messages leads (left) and is the
+        // default; auto forward is the timer-based alternative on the right.
+        IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: _ModeRadioCard(
+                  icon: Icons.sms_outlined,
+                  label: 'Check messages',
+                  selected: _selectedMode == ForwardingMode.messageCheck,
+                  onTap: _saving
+                      ? null
+                      : () => _selectMode(ForwardingMode.messageCheck),
+                ),
               ),
-            ),
-            if (status?.enabled ?? false) ...[
               const SizedBox(width: 12),
-              TextButton(
-                onPressed: _saving ? null : _turnOff,
-                child: const Text('Turn off'),
+              Expanded(
+                child: _ModeRadioCard(
+                  icon: Icons.autorenew,
+                  label: 'Auto forward',
+                  selected: _selectedMode == ForwardingMode.autoForward,
+                  onTap: _saving
+                      ? null
+                      : () => _selectMode(ForwardingMode.autoForward),
+                ),
               ),
             ],
-          ],
+          ),
         ),
         // The leftover balance + manual "Run sweep" live here, right below the
-        // action buttons — only in check-messages mode (auto-forward sweeps on its
-        // own timer, so a manual run isn't offered there).
+        // mode cards — only in check-messages mode (auto-forward sweeps on its
+        // own timer, so a manual run isn't offered there). Run sweep dials *800#
+        // and forwards the balance — a manual auto-forward. The leftover readout no
+        // longer carries its own refresh button: pull down (swipe-to-refresh) on
+        // this screen to re-read the balance via *800# (see _ForwardingTab._refresh).
         if (_selectedMode == ForwardingMode.messageCheck) ...[
           const SizedBox(height: 20),
           IntrinsicHeight(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(
-                  child: _LeftoverBalance(balance: leftover),
-                ),
+                Expanded(child: _LeftoverBalance(balance: leftover)),
                 const SizedBox(width: 12),
                 Expanded(
                   child: _RunSweepButton(
-                    onRun: _saving ? null : _runSweep,
+                    // Disabled while a sweep is running ("Running…") or a pull-to-
+                    // refresh balance check is dialing *800# ("Refreshing…"), so a
+                    // sweep can't start on top of an in-flight USSD operation.
+                    onRun: (_saving || _sweeping || refreshingBalance)
+                        ? null
+                        : _runSweep,
+                    busy: _sweeping || refreshingBalance,
+                    label: _sweeping
+                        ? 'Running…'
+                        : (refreshingBalance ? 'Refreshing…' : 'Run sweep'),
                   ),
                 ),
               ],
@@ -277,8 +345,9 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
 }
 
 /// Left column of the sweep row: the balance left on the account after the most
-/// recent forward, read off the last result dialog. Shows "—" until the first
-/// forward completes.
+/// recent forward / balance check. Shows just the amount ("—" until the first
+/// read) with no labels. Refreshed by pulling down (swipe-to-refresh) on the
+/// screen — which re-reads the balance via *800# without forwarding.
 class _LeftoverBalance extends StatelessWidget {
   const _LeftoverBalance({required this.balance});
 
@@ -295,52 +364,129 @@ class _LeftoverBalance extends StatelessWidget {
         color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.account_balance_wallet_outlined,
-                size: 16,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                'Leftover balance',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            text,
-            style: theme.textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: theme.colorScheme.onSurface,
-            ),
-          ),
-        ],
+      alignment: Alignment.center,
+      child: Text(
+        text,
+        style: theme.textTheme.headlineSmall?.copyWith(
+          fontWeight: FontWeight.w700,
+          color: theme.colorScheme.onSurface,
+        ),
       ),
     );
   }
 }
 
-/// Right column of the sweep row: the manual "Run sweep" button.
+/// One selectable "forwarding mode" card in the two-up radio row. The selected
+/// card fills with the brand green and flips its icon/label/radio to white; an
+/// unselected card stays on a neutral surface with an outline. Tapping it selects
+/// the mode (the same effect the old SegmentedButton segment had). Passing a null
+/// [onTap] disables it (while a save is in flight).
+class _ModeRadioCard extends StatelessWidget {
+  const _ModeRadioCard({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    // Selected: green fill, white foreground. Unselected: neutral surface with an
+    // outline and normal foreground.
+    final Color background = selected
+        ? scheme.primary
+        : scheme.surfaceContainerHighest;
+    final Color foreground = selected ? Colors.white : scheme.onSurface;
+
+    return Material(
+      color: background,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? scheme.primary : scheme.outlineVariant,
+              width: 1.5,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Icon(icon, color: foreground, size: 22),
+                  Icon(
+                    selected
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    color: selected
+                        ? Colors.white
+                        : scheme.onSurfaceVariant,
+                    size: 20,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                label,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  color: foreground,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Right column of the sweep row: the manual "Run sweep" button. Dials *800# and
+/// forwards the balance — a manual auto-forward (check-messages mode only).
 class _RunSweepButton extends StatelessWidget {
-  const _RunSweepButton({required this.onRun});
+  const _RunSweepButton({
+    required this.onRun,
+    required this.label,
+    this.busy = false,
+  });
 
   final VoidCallback? onRun;
+
+  /// The button caption: "Run sweep" when idle, "Running…" during a sweep,
+  /// "Refreshing…" while a pull-to-refresh balance check is dialing.
+  final String label;
+
+  /// True while a USSD operation is in flight: the button is disabled and shows a
+  /// spinner in place of its icon so it's clear it's busy.
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
     return FilledButton.icon(
       onPressed: onRun,
-      icon: const Icon(Icons.refresh),
-      label: const Text('Run sweep'),
+      icon: busy
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.refresh),
+      label: Text(label),
       style: FilledButton.styleFrom(
         minimumSize: const Size.fromHeight(double.infinity),
       ),

@@ -17,6 +17,18 @@ class AppTheme {
   static const Color leonGreen = Color(0xFF2FA84F);
   static const Color _leonGreenDark = Color(0xFF248A40);
 
+  /// Brand mark colour for the app-bar app icon glyph.
+  static const Color brandIconGreen = Color(0xFF26A65B);
+
+  /// Brand colour for the app-bar app name text.
+  static const Color brandNameGreen = Color(0xFF2E8B57);
+
+  /// The product typeface. The licensed TT Norms Pro font files aren't bundled
+  /// in the repo (commercial licence); drop them into `assets/fonts/` and
+  /// uncomment the `fonts:` block in pubspec.yaml to activate them. Until then
+  /// this family name resolves to the platform default, so the UI still renders.
+  static const String fontFamily = 'TT Norms Pro';
+
   static ThemeData get light => _lightTheme();
 
   static ThemeData get dark => _darkTheme();
@@ -69,6 +81,9 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,
+      // Product typeface. Falls back to the platform default until the licensed
+      // TT Norms Pro files are added (see [fontFamily]).
+      fontFamily: fontFamily,
       scaffoldBackgroundColor: scaffold,
       appBarTheme: AppBarTheme(
         backgroundColor: isLight ? Colors.white : colorScheme.surface,

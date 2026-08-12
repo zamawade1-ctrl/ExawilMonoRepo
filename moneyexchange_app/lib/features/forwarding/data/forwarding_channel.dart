@@ -297,6 +297,19 @@ class ForwardingChannel {
   Future<void> setActiveUser(int? userId) =>
       _channel.invokeMethod('setActiveUser', {'userId': userId});
 
+  /// Tells the native side whether the user's plan (trial or paid) is currently
+  /// active and, if so, the epoch-millis instant it stays valid through. The native
+  /// forwarder refuses to dial `*800#` or act on a Zaad SMS once the plan has
+  /// expired, so an expired account does nothing — even with the app closed. Pass
+  /// [active] false (and any [activeUntilEpochMs]) to hard-stop it. No-op off Android.
+  Future<void> setPlanActive({
+    required bool active,
+    required int activeUntilEpochMs,
+  }) => _channel.invokeMethod('setPlanActive', {
+    'active': active,
+    'activeUntilEpochMs': activeUntilEpochMs,
+  });
+
   /// Stops the on-device forwarder so no USSD runs once the user is signed out —
   /// in either mode. Disables the enabled flag (standing down the SMS-driven
   /// message-check path and the boot receiver) and tears the poller + its alarm

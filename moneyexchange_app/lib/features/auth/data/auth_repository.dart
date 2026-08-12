@@ -37,42 +37,88 @@ class AuthRepository {
   /// user-facing message on any failure.
   Future<AppUser> register({
     required String fullName,
-    required String email,
-    required String username,
+    required String phoneNumber,
     required String password,
+    String? deviceId,
+    String? deviceLabel,
   }) async {
     return _run(
       () => _authApi.register(
         fullName: fullName,
-        email: email,
-        username: username,
+        phoneNumber: phoneNumber,
         password: password,
+        deviceId: deviceId,
+        deviceLabel: deviceLabel,
       ),
     );
   }
 
   /// Signs in, then persists the session. Throws [AuthException] with a
-  /// user-facing message on any failure.
+  /// user-facing message on any failure (including the backend's "registered to
+  /// another device" message when the device id doesn't match).
   Future<AppUser> login({
-    required String usernameOrEmail,
+    required String phoneNumber,
     required String password,
+    String? deviceId,
+    String? deviceLabel,
   }) async {
     return _run(
-      () => _authApi.login(usernameOrEmail: usernameOrEmail, password: password),
+      () => _authApi.login(
+        phoneNumber: phoneNumber,
+        password: password,
+        deviceId: deviceId,
+        deviceLabel: deviceLabel,
+      ),
     );
   }
 
-  /// Runs an auth call and, on success, saves the token + profile. Maps
-  /// transport/backend errors to a friendly [AuthException].
-  Future<AppUser> _run(
-    Future<(String, AppUser)> Function() call,
-  ) async {
+  /// Runs an auth call and, on success, saves the token + profile + plan
+  /// snapshot. Maps transport/backend errors to a friendly [AuthException].
+  Future<AppUser> _run(Future<AuthResult> Function() call) async {
     try {
-      final (accessToken, user) = await call();
+      final (accessToken, user, planJson) = await call();
       await _sessionStorage.save(
         accessToken: accessToken,
         userProfileJson: user.toJson(),
       );
+      if (planJson != null) await _sessionStorage.savePlan(planJson);
+      return user;
+    } on DioException catch (e) {
+      throw AuthException(_messageFor(e));
+    }
+  }
+
+  /// Updates the cached profile (e.g. after the user sets their app PIN), so a
+  /// cold-start restore reflects it without a network round-trip.
+  Future<void> updateCachedUser(AppUser user) async {
+    await _sessionStorage.updateUserProfile(user.toJson());
+  }
+
+  /// Changes the signed-in user's own password. Throws [AuthException] on failure.
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    try {
+      await _authApi.changePassword(
+        currentPassword: currentPassword,
+        newPassword: newPassword,
+      );
+    } on DioException catch (e) {
+      throw AuthException(_messageFor(e));
+    }
+  }
+
+  /// Turns the app-lock PIN on/off, persisting the fresh token + updated profile so the
+  /// change survives a cold start. Returns the updated [AppUser].
+  Future<AppUser> setPinEnabled(bool enabled) async {
+    try {
+      final (accessToken, user, planJson) = await _authApi.setPinEnabled(enabled);
+      await _sessionStorage.save(
+        accessToken: accessToken,
+        userProfileJson: user.toJson(),
+      );
+      if (planJson != null) await _sessionStorage.savePlan(planJson);
       return user;
     } on DioException catch (e) {
       throw AuthException(_messageFor(e));

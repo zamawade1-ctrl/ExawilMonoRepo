@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../dashboard/domain/dashboard_data.dart';
 import '../../dashboard/domain/device_transaction.dart';
 import '../../dashboard/presentation/dashboard_providers.dart';
 
@@ -26,17 +27,22 @@ class TransactionsScreen extends ConsumerWidget {
         error: (error, _) => _ErrorState(
           onRetry: () => ref.read(deviceLedgerProvider.notifier).refresh(),
         ),
-        data: (transactions) => transactions.isEmpty
-            ? const _EmptyState()
-            : ListView.separated(
-                controller: controller,
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                itemCount: transactions.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 8),
-                itemBuilder: (context, index) =>
-                    _TransactionTile(transaction: transactions[index]),
-              ),
+        data: (all) {
+          // Bank-only app now: hide mobile-number forwards (a removed feature).
+          // Received money-in and bank forwards remain.
+          final transactions = all.where(isDisplayedTransaction).toList();
+          return transactions.isEmpty
+              ? const _EmptyState()
+              : ListView.separated(
+                  controller: controller,
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.all(16),
+                  itemCount: transactions.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) =>
+                      _TransactionTile(transaction: transactions[index]),
+                );
+        },
       ),
     );
   }

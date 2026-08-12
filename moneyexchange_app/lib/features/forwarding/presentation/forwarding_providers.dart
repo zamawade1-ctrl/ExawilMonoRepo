@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -29,6 +30,41 @@ final nativeForwardingProvider =
 final leftoverBalanceStreamProvider = StreamProvider<double>((ref) {
   return const ForwardingChannel().leftoverBalanceEvents();
 });
+
+/// Whether a pull-to-refresh balance check (`*800#`, balance-only) is currently
+/// being dialed. The "Run sweep" button watches this and disables itself while a
+/// refresh is in flight, so a sweep can't be started on top of an in-progress
+/// balance read. Set the moment a pull-to-refresh fires the check; cleared when the
+/// balance comes back on [leftoverBalanceStreamProvider], or a safety timeout fires
+/// (in case the read never reports back) so the button can never stay stuck.
+final balanceRefreshInProgressProvider =
+    NotifierProvider<BalanceRefreshNotifier, bool>(BalanceRefreshNotifier.new);
+
+class BalanceRefreshNotifier extends Notifier<bool> {
+  Timer? _timeout;
+
+  @override
+  bool build() {
+    ref.onDispose(() => _timeout?.cancel());
+    return false;
+  }
+
+  /// A pull-to-refresh started dialing the `*800#` balance check: disable Run
+  /// sweep. Auto-clears after [maxWait] as a backstop, so a read that never
+  /// reports a balance can't leave the button disabled forever.
+  void begin({Duration maxWait = const Duration(seconds: 20)}) {
+    _timeout?.cancel();
+    state = true;
+    _timeout = Timer(maxWait, () => state = false);
+  }
+
+  /// The balance came back (or the wait elapsed): re-enable Run sweep.
+  void complete() {
+    _timeout?.cancel();
+    _timeout = null;
+    if (state) state = false;
+  }
+}
 
 class NativeForwardingController extends AsyncNotifier<NativeForwardingState> {
   static const _channel = ForwardingChannel();

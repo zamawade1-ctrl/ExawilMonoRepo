@@ -21,7 +21,7 @@ import com.moneyexchange.moneyexchange_app.forwarding.SimCards
 import com.moneyexchange.moneyexchange_app.forwarding.TransactionEvents
 import com.moneyexchange.moneyexchange_app.forwarding.TransactionStore
 import com.moneyexchange.moneyexchange_app.forwarding.UssdAccessibilityService
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
@@ -37,7 +37,9 @@ import io.flutter.plugin.common.MethodChannel
  * ever cross this channel on their way to the Android Keystore — never to the
  * server.
  */
-class MainActivity : FlutterActivity() {
+// Extends FlutterFragmentActivity (not FlutterActivity) because the local_auth
+// plugin's BiometricPrompt-based device-auth flow requires a FragmentActivity host.
+class MainActivity : FlutterFragmentActivity() {
 
     private val channelName = "xawil/forwarding"
     private val eventsChannelName = "xawil/forwarding/events"
@@ -194,6 +196,21 @@ class MainActivity : FlutterActivity() {
                             settings.enabled = false
                         }
                         ForwardingForegroundService.stop(this)
+                        result.success(null)
+                    }
+                    "setPlanActive" -> {
+                        // Push the plan window from Flutter: whether the trial/paid plan
+                        // is active and the epoch-millis it stays valid through. The
+                        // forwarder refuses ALL USSD once expired (see the plan gate in
+                        // ForwardingForegroundService.onStartCommand), even app-closed.
+                        // When it flips inactive, tear the running poller down now.
+                        val active = call.argument<Boolean>("active") ?: true
+                        val until = call.argument<Number>("activeUntilEpochMs")?.toLong() ?: 0L
+                        settings.planActive = active
+                        settings.planActiveUntilMs = until
+                        if (!settings.isPlanActive()) {
+                            ForwardingForegroundService.stop(this)
+                        }
                         result.success(null)
                     }
                     else -> result.notImplemented()

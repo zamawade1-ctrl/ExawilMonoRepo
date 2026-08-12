@@ -22,7 +22,14 @@ public class JwtTokenService : IJwtTokenService
 
     public JwtToken CreateToken(User user) => CreateToken(
         user.Id.ToString(),
-        [new Claim("email", user.Email), new Claim("username", user.Username ?? string.Empty), new Claim("subjectType", "user")]);
+        [
+            new Claim("email", user.Email ?? string.Empty),
+            new Claim("username", user.Username ?? string.Empty),
+            new Claim("phoneNumber", user.PhoneNumber ?? string.Empty),
+            new Claim("subjectType", "user"),
+            // ClaimTypes.Role so [Authorize(Roles = "Admin")] works with no extra config.
+            new Claim(ClaimTypes.Role, user.Role.ToString())
+        ]);
 
     private JwtToken CreateToken(string subject, IEnumerable<Claim> extraClaims)
     {

@@ -66,9 +66,11 @@ class DashboardSelectionController extends Notifier<DashboardSelection> {
 }
 
 /// The dashboard view model, recomputed whenever the ledger or the selected
-/// date/day changes.
+/// date/day changes. Mobile-number forwards are filtered out (bank-only app now)
+/// so no mobile-forwarding data appears in any chart or total.
 final dashboardDataProvider = Provider<DashboardData>((ref) {
-  final txns = ref.watch(deviceLedgerProvider).value ?? const <DeviceTransaction>[];
+  final all = ref.watch(deviceLedgerProvider).value ?? const <DeviceTransaction>[];
+  final txns = all.where(isDisplayedTransaction).toList();
   final selection = ref.watch(dashboardSelectionProvider);
   return computeDashboard(txns, selection, DateTime.now());
 });

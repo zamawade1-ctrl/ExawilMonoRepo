@@ -19,6 +19,8 @@ public class AppDbContext : DbContext
 
     public DbSet<IncomingMoneyTransaction> IncomingMoneyTransactions => Set<IncomingMoneyTransaction>();
 
+    public DbSet<ActivationCode> ActivationCodes => Set<ActivationCode>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ExchangeTransaction>(entity =>
@@ -37,6 +39,15 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.Email).IsUnique();
             entity.HasIndex(e => e.Username).IsUnique();
             entity.HasIndex(e => e.GoogleSubjectId).IsUnique();
+            // Phone is the login identity now; unique (Postgres treats the many NULLs as distinct).
+            entity.HasIndex(e => e.PhoneNumber).IsUnique();
+            // Store the role as its name ("User"/"Admin") rather than an int, for readable rows.
+            entity.Property(e => e.Role).HasConversion<string>().HasMaxLength(20);
+        });
+
+        modelBuilder.Entity<ActivationCode>(entity =>
+        {
+            entity.HasIndex(e => e.Code).IsUnique();
         });
 
         modelBuilder.Entity<Customer>(entity =>

@@ -21,9 +21,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
   final _formKey = GlobalKey<FormState>();
 
   final _fullNameController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _usernameController = TextEditingController();
-  final _identifierController = TextEditingController(); // sign-in: username or email
+  final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
 
   _AuthMode _mode = _AuthMode.signIn;
@@ -34,9 +32,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
   @override
   void dispose() {
     _fullNameController.dispose();
-    _emailController.dispose();
-    _usernameController.dispose();
-    _identifierController.dispose();
+    _phoneController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
@@ -63,13 +59,12 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
       if (signingUp) {
         await notifier.register(
           fullName: _fullNameController.text.trim(),
-          email: _emailController.text.trim(),
-          username: _usernameController.text.trim(),
+          phoneNumber: _phoneController.text.trim(),
           password: _passwordController.text,
         );
       } else {
         await notifier.login(
-          usernameOrEmail: _identifierController.text.trim(),
+          phoneNumber: _phoneController.text.trim(),
           password: _passwordController.text,
         );
       }
@@ -225,10 +220,10 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
     );
   }
 
-  /// The mode-specific fields. Password is shared; the rest differ per mode.
+  /// The mode-specific fields. Phone + password are shared; sign-up adds a name.
   List<Widget> _fields() {
-    if (_isSignUp) {
-      return [
+    return [
+      if (_isSignUp) ...[
         _TextField(
           controller: _fullNameController,
           label: 'Full name',
@@ -239,44 +234,23 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
               : null,
         ),
         const SizedBox(height: 16),
-        _TextField(
-          controller: _emailController,
-          label: 'Email',
-          icon: Icons.mail_outline,
-          keyboardType: TextInputType.emailAddress,
-          validator: (v) {
-            final value = v?.trim() ?? '';
-            if (value.isEmpty) return 'Enter your email';
-            if (!value.contains('@') || !value.contains('.')) {
-              return 'Enter a valid email';
-            }
-            return null;
-          },
-        ),
-        const SizedBox(height: 16),
-        _TextField(
-          controller: _usernameController,
-          label: 'Username',
-          icon: Icons.person_outline,
-          validator: (v) => (v == null || v.trim().length < 3)
-              ? 'Username must be at least 3 characters'
-              : null,
-        ),
-        const SizedBox(height: 16),
-        _passwordField(isNew: true),
-      ];
-    }
-    return [
+      ],
       _TextField(
-        controller: _identifierController,
-        label: 'Username or email',
-        icon: Icons.person_outline,
-        validator: (v) => (v == null || v.trim().isEmpty)
-            ? 'Enter your username or email'
-            : null,
+        controller: _phoneController,
+        label: 'Phone number',
+        icon: Icons.phone_outlined,
+        keyboardType: TextInputType.phone,
+        validator: (v) {
+          final value = v?.trim() ?? '';
+          if (value.isEmpty) return 'Enter your phone number';
+          if (value.replaceAll(RegExp(r'[^0-9]'), '').length < 6) {
+            return 'Enter a valid phone number';
+          }
+          return null;
+        },
       ),
       const SizedBox(height: 16),
-      _passwordField(isNew: false),
+      _passwordField(isNew: _isSignUp),
     ];
   }
 
