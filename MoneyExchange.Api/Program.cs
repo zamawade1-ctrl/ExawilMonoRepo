@@ -15,6 +15,16 @@ using MoneyExchange.Api.Services.Subscription;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Hosting platforms (Render, Railway, Fly, …) inject the port to listen on via the
+// PORT env var and terminate TLS at their proxy, forwarding plain HTTP to the
+// container. Bind to 0.0.0.0:$PORT so the proxy can reach the app. Locally PORT is
+// unset, so the usual launch URLs / --urls apply unchanged.
+var listenPort = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrWhiteSpace(listenPort))
+{
+    builder.WebHost.UseUrls($"http://0.0.0.0:{listenPort}");
+}
+
 // --- Persistence: EF Core + Postgres (Supabase) ---
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
@@ -150,10 +160,19 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+// Behind a TLS-terminating platform proxy (Render/etc.) the container serves plain
+// HTTP, so only enforce HTTPS redirection outside that setup (i.e. local dev over
+// https). In production the proxy already serves the public URL over HTTPS.
+if (!app.Environment.IsProduction())
+{
+    app.UseHttpsRedirection();
+}
 app.UseCors(AdminWebCorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// Anonymous health check for the hosting platform (Render healthCheckPath=/health).
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.Run();

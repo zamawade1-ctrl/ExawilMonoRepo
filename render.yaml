@@ -1,0 +1,39 @@
+# Render Blueprint for the MoneyExchange.Api backend (Docker).
+# In Render: New → Blueprint → connect this repo. Render reads this file, builds the
+# Docker image from MoneyExchange.Api/, and prompts for the `sync: false` secrets.
+#
+# Required env vars you must fill in on first deploy:
+#   - ConnectionStrings__DefaultConnection  (Supabase Session-pooler string)
+#   - Jwt__Key                              (a long random secret, e.g. `openssl rand -base64 48`)
+#   - Admin__Phone / Admin__Password        (bootstraps the first admin account)
+# Optional:
+#   - Cors__AllowedOrigins__0 ...           (the admin web origin(s), once hosted)
+services:
+  - type: web
+    name: moneyexchange-api
+    runtime: docker
+    branch: main
+    dockerfilePath: ./MoneyExchange.Api/Dockerfile
+    dockerContext: ./MoneyExchange.Api
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      # Supabase Postgres — Session pooler string. Set in the dashboard.
+      - key: ConnectionStrings__DefaultConnection
+        sync: false
+      # JWT signing key — generate a strong random value.
+      - key: Jwt__Key
+        sync: false
+      # Bootstrap admin account (created/promoted on startup).
+      - key: Admin__Phone
+        sync: false
+      - key: Admin__Password
+        sync: false
+      - key: Admin__FullName
+        value: Administrator
+      # Admin web origin(s) for CORS — set to your hosted admin URL(s) when ready.
+      - key: Cors__AllowedOrigins__0
+        sync: false
