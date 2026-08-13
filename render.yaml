@@ -21,6 +21,9 @@ services:
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
+      # Avoid the config FileSystemWatcher (inotify) that crashes startup in containers.
+      - key: DOTNET_hostBuilder__reloadConfigOnChange
+        value: "false"
       # Supabase Postgres — Session pooler string. Set in the dashboard.
       - key: ConnectionStrings__DefaultConnection
         sync: false
