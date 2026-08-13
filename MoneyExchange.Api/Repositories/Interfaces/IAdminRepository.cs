@@ -23,6 +23,9 @@ public interface IAdminRepository
     /// <summary>Admin sets a new password for a user (forgot-password), identified by phone.</summary>
     Task<ServiceResponse<bool>> ResetPasswordAsync(ResetPasswordDto dto);
 
+    /// <summary>Admin corrects a user's phone number (mistyped at sign-up), keeping it unique.</summary>
+    Task<ServiceResponse<bool>> UpdatePhoneAsync(UpdatePhoneDto dto);
+
     /// <summary>All customer accounts with their live plan snapshot, for the admin dashboard.</summary>
     Task<ServiceResponse<List<AdminUserDto>>> ListUsersAsync();
 }

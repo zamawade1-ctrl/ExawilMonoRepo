@@ -1,0 +1,318 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useUsers } from '../features/admin/useUsers';
+import {
+  planBadge,
+  planRemainingMs,
+  planState,
+  planView,
+  type PlanState,
+} from '../lib/plan';
+import type { AdminUser } from '../lib/schemas';
+import { UserDetailPanel } from '../components/UserDetailPanel';
+import { PageHeader } from '../components/PageHeader';
+
+type Filter = 'all' | PlanState;
+type SortKey =
+  | 'name'
+  | 'phone'
+  | 'device'
+  | 'plan'
+  | 'kind'
+  | 'joined'
+  | 'lastModified';
+type SortDir = 'asc' | 'desc';
+
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'pro', label: 'Pro' },
+  { key: 'trial', label: 'Trial' },
+  { key: 'expired', label: 'Expired' },
+];
+
+const PAGE_SIZE = 8;
+
+const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
+  { key: 'name', label: 'Name' },
+  { key: 'phone', label: 'Phone' },
+  { key: 'device', label: 'Device' },
+  { key: 'plan', label: 'Plan' },
+  { key: 'kind', label: 'Plan kind' },
+  { key: 'lastModified', label: 'Last edited' },
+];
+
+/**
+ * User-management page: a sortable, paginated datatable of customers with search
+ * (name / phone / device label) and plan filtering, plus a master-detail panel on
+ * the right for the selected account (details + admin actions).
+ */
+export function UsersPage() {
+  const { users, fetchedAt, loading, error, reload } = useUsers();
+  const navigate = useNavigate();
+
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<Filter>('all');
+  // Default to the server's "most-recently-edited first" order.
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({
+    key: 'lastModified',
+    dir: 'desc',
+  });
+  const [page, setPage] = useState(1);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+
+  const customers = useMemo(
+    () => users.filter((u) => u.role.toLowerCase() !== 'admin'),
+    [users],
+  );
+
+  // Filter + search (search also matches the bound device label).
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return customers.filter((u) => {
+      if (filter !== 'all' && planState(u.plan, fetchedAt) !== filter) return false;
+      if (!q) return true;
+      return (
+        u.fullName.toLowerCase().includes(q) ||
+        (u.phone ?? '').toLowerCase().includes(q) ||
+        (u.deviceLabel ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [customers, query, filter, fetchedAt]);
+
+  // Sort.
+  const sorted = useMemo(() => {
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    const val = (u: AdminUser): string | number => {
+      switch (sort.key) {
+        case 'name':
+          return u.fullName.toLowerCase();
+        case 'phone':
+          return u.phone ?? '';
+        case 'device':
+          return (u.deviceLabel ?? '').toLowerCase();
+        case 'plan':
+          return planRemainingMs(u.plan, fetchedAt);
+        case 'kind':
+          return (u.planKind ?? '').toLowerCase();
+        case 'joined':
+          return new Date(u.createdAtUtc).getTime();
+        case 'lastModified':
+          return new Date(u.lastModifiedAtUtc ?? u.createdAtUtc).getTime();
+      }
+    };
+    return [...filtered].sort((a, b) => {
+      const av = val(a);
+      const bv = val(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  }, [filtered, sort, fetchedAt]);
+
+  // Reset to page 1 whenever the result set changes shape.
+  useEffect(() => setPage(1), [query, filter, sort]);
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const clampedPage = Math.min(page, totalPages);
+  const pageRows = sorted.slice(
+    (clampedPage - 1) * PAGE_SIZE,
+    clampedPage * PAGE_SIZE,
+  );
+
+  const selected = customers.find((u) => u.userId === selectedId) ?? null;
+
+  function toggleSort(key: SortKey) {
+    const textCols: SortKey[] = ['name', 'phone', 'device', 'kind'];
+    setSort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: textCols.includes(key) ? 'asc' : 'desc' },
+    );
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="Users"
+        subtitle={`${customers.length} customer${customers.length === 1 ? '' : 's'}`}
+        action={
+          <div className="page-header-buttons">
+            <button className="btn btn-ghost" onClick={() => reload()}>
+              Refresh
+            </button>
+            <button className="btn btn-primary" onClick={() => navigate('/codes')}>
+              Generate code
+            </button>
+          </div>
+        }
+      />
+
+      <div className="toolbar">
+        <div className="search">
+          <SearchIcon />
+          <input
+            className="search-input"
+            placeholder="Search by name, phone or device"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <div className="segmented">
+          {FILTERS.map((f) => (
+            <button
+              key={f.key}
+              className={`segment${filter === f.key ? ' segment-active' : ''}`}
+              onClick={() => setFilter(f.key)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="users-layout">
+        <div className="users-main">
+          {error ? (
+            <div className="alert alert-error">{error}</div>
+          ) : loading && users.length === 0 ? (
+            <div className="page-loading">
+              <span className="spinner" />
+            </div>
+          ) : (
+            <div className="table-card">
+              <table className="datatable">
+                <thead>
+                  <tr>
+                    {COLUMNS.map((c) => (
+                      <th key={c.key}>
+                        <button
+                          className="th-sort"
+                          onClick={() => toggleSort(c.key)}
+                        >
+                          {c.label}
+                          <SortCaret
+                            active={sort.key === c.key}
+                            dir={sort.dir}
+                          />
+                        </button>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={COLUMNS.length} className="table-empty">
+                        No matching customers.
+                      </td>
+                    </tr>
+                  ) : (
+                    pageRows.map((u) => {
+                      const view = planView(u.plan, fetchedAt);
+                      const badge = planBadge(view.state);
+                      return (
+                        <tr
+                          key={u.userId}
+                          className={
+                            u.userId === selectedId ? 'row-selected' : undefined
+                          }
+                          onClick={() => setSelectedId(u.userId)}
+                        >
+                          <td className="cell-name">{u.fullName || '—'}</td>
+                          <td className="muted">{u.phone ?? '—'}</td>
+                          <td className="muted cell-device">
+                            {u.hasDevice ? (u.deviceLabel ?? 'Registered') : '—'}
+                          </td>
+                          <td>
+                            <span className={`badge ${badge.className}`}>
+                              {badge.label}
+                            </span>
+                            {view.state !== 'expired' && (
+                              <span className="cell-remaining">
+                                {view.remainingLabel}
+                              </span>
+                            )}
+                          </td>
+                          <td className="muted">{u.planKind ?? '—'}</td>
+                          <td className="muted">
+                            {fmtDate(u.lastModifiedAtUtc ?? u.createdAtUtc)}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+
+              <div className="pagination">
+                <span className="pagination-info">
+                  {sorted.length === 0
+                    ? '0 results'
+                    : `${(clampedPage - 1) * PAGE_SIZE + 1}–${Math.min(
+                        clampedPage * PAGE_SIZE,
+                        sorted.length,
+                      )} of ${sorted.length}`}
+                </span>
+                <div className="pagination-controls">
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={clampedPage <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    Prev
+                  </button>
+                  <span className="pagination-page">
+                    Page {clampedPage} / {totalPages}
+                  </span>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={clampedPage >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <UserDetailPanel
+          user={selected}
+          fetchedAt={fetchedAt}
+          onChanged={reload}
+        />
+      </div>
+    </>
+  );
+}
+
+function SortCaret({ active, dir }: { active: boolean; dir: SortDir }) {
+  return (
+    <span className={`sort-caret${active ? ' sort-active' : ''}`}>
+      {active ? (dir === 'asc' ? '▲' : '▼') : '↕'}
+    </span>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="icon-sm" aria-hidden>
+      <path
+        fill="currentColor"
+        d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5Zm-6 0A4.5 4.5 0 1 1 14 9.5 4.49 4.49 0 0 1 9.5 14Z"
+      />
+    </svg>
+  );
+}
+
+function fmtDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : d.toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      });
+}

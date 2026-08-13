@@ -27,6 +27,21 @@ class SubscriptionApi {
     return PlanSnapshot.fromJson(response.data!['data'] as Map<String, dynamic>);
   }
 
+  /// The session's live validity + plan, for the fast session poll. [valid] is
+  /// false once this [deviceId] no longer matches the account's bound device
+  /// (e.g. after an admin device-reset), signalling the app to sign out.
+  Future<({bool valid, PlanSnapshot plan})> session(String? deviceId) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/api/subscription/session',
+      queryParameters: deviceId == null ? null : {'deviceId': deviceId},
+    );
+    final data = response.data!['data'] as Map<String, dynamic>;
+    return (
+      valid: data['valid'] as bool? ?? true,
+      plan: PlanSnapshot.fromJson(data['plan'] as Map<String, dynamic>),
+    );
+  }
+
   /// Redeems an activation code, returning the new plan snapshot. Throws
   /// [SubscriptionException] with the backend message on failure.
   Future<PlanSnapshot> redeem(String code) async {

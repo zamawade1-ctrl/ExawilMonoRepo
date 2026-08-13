@@ -29,12 +29,15 @@ class AdminApi {
     }
   }
 
-  /// Mints an activation code bound to [phone], granting [durationMinutes], expiring in
-  /// [expiresInMinutes] (0 = never). Returns the first generated code.
-  Future<GeneratedCode> generateCode({
+  /// Mints [count] activation code(s) bound to [phone], granting [durationMinutes]
+  /// (or a forever plan when [forever]), expiring in [expiresInMinutes] (0 = never).
+  /// Returns all generated codes.
+  Future<List<GeneratedCode>> generateCodes({
     required String phone,
     required int durationMinutes,
     required int expiresInMinutes,
+    bool forever = false,
+    int count = 1,
   }) async {
     try {
       final response = await _dio.post<Map<String, dynamic>>(
@@ -43,11 +46,12 @@ class AdminApi {
           'phone': phone,
           'durationMinutes': durationMinutes,
           'expiresInMinutes': expiresInMinutes,
-          'count': 1,
+          'forever': forever,
+          'count': count,
         },
       );
       final list = (response.data!['data'] as List).cast<Map<String, dynamic>>();
-      return GeneratedCode.fromJson(list.first);
+      return list.map(GeneratedCode.fromJson).toList();
     } on DioException catch (e) {
       throw AdminException(_messageFor(e));
     }
@@ -64,6 +68,10 @@ class AdminApi {
   /// Sets a new password for a user who forgot theirs.
   Future<void> resetPassword({required String phone, required String newPassword}) =>
       _post('/api/admin/reset-password', {'phone': phone, 'newPassword': newPassword});
+
+  /// Corrects a user's mistyped phone number.
+  Future<void> updatePhone({required String phone, required String newPhone}) =>
+      _post('/api/admin/update-phone', {'phone': phone, 'newPhone': newPhone});
 
   Future<void> _post(String path, Map<String, dynamic> body) async {
     try {

@@ -107,6 +107,13 @@ class MainActivity : FlutterFragmentActivity() {
                     }
                     "getStatus" -> result.success(status(settings))
                     "getTransactions" -> result.success(TransactionStore.all(this))
+                    "getStorageInfo" -> result.success(TransactionStore.storageInfo(this))
+                    "clearOldTransactions" -> {
+                        // "Refresh storage": drop everything older than ~1 month, keep the
+                        // last month. Returns how many events were removed.
+                        val removed = TransactionStore.clearExceptLastMonth(this)
+                        result.success(removed)
+                    }
                     "listSims" -> result.success(SimCards.list(this))
                     "requestPermissions" -> {
                         // Hold the Flutter result until the user has actually
@@ -154,7 +161,10 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(null)
                     }
                     "sweepNow" -> {
-                        ForwardingForegroundService.sweepNow(this)
+                        // fresh=true (the pull-to-refresh) forces a live *800# balance read
+                        // instead of depositing the cached leftover.
+                        val fresh = call.argument<Boolean>("fresh") ?: false
+                        ForwardingForegroundService.sweepNow(this, fresh)
                         result.success(null)
                     }
                     "checkBalance" -> {

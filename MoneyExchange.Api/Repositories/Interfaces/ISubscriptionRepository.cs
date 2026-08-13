@@ -13,6 +13,12 @@ public interface ISubscriptionRepository
     /// <summary>The signed-in user's current plan snapshot (status + trial/plan timestamps).</summary>
     Task<ServiceResponse<PlanStatusDto>> GetStatusAsync(int userId);
 
+    /// <summary>
+    /// The session's live validity (device still bound to <paramref name="deviceId"/>) + plan, for the
+    /// app's fast session poll. A cleared/rebound device makes the session invalid so the app signs out.
+    /// </summary>
+    Task<ServiceResponse<SessionStatusDto>> GetSessionAsync(int userId, string? deviceId);
+
     /// <summary>Redeems a one-time activation code, extending/opening the user's Pro plan.</summary>
     Task<ServiceResponse<PlanStatusDto>> RedeemAsync(int userId, RedeemActivationDto dto);
 }

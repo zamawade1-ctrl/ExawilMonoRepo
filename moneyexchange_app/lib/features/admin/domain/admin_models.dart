@@ -11,6 +11,8 @@ class AdminUser {
     required this.hasDevice,
     required this.createdAtUtc,
     required this.lastLoginAtUtc,
+    required this.lastModifiedAtUtc,
+    required this.planKind,
     required this.plan,
   });
 
@@ -22,6 +24,8 @@ class AdminUser {
   final bool hasDevice;
   final DateTime createdAtUtc;
   final DateTime lastLoginAtUtc;
+  final DateTime lastModifiedAtUtc;
+  final String? planKind;
   final PlanSnapshot plan;
 
   bool get isAdmin => role.toLowerCase() == 'admin';
@@ -35,6 +39,10 @@ class AdminUser {
     hasDevice: json['hasDevice'] as bool? ?? false,
     createdAtUtc: DateTime.parse(json['createdAtUtc'] as String).toUtc(),
     lastLoginAtUtc: DateTime.parse(json['lastLoginAtUtc'] as String).toUtc(),
+    lastModifiedAtUtc: json['lastModifiedAtUtc'] == null
+        ? DateTime.parse(json['createdAtUtc'] as String).toUtc()
+        : DateTime.parse(json['lastModifiedAtUtc'] as String).toUtc(),
+    planKind: json['planKind'] as String?,
     plan: PlanSnapshot.fromJson(json['plan'] as Map<String, dynamic>),
   );
 }
@@ -45,18 +53,21 @@ class GeneratedCode {
     required this.code,
     required this.durationMinutes,
     this.assignedToPhone,
+    this.planKind,
     this.expiresAtUtc,
   });
 
   final String code;
   final int durationMinutes;
   final String? assignedToPhone;
+  final String? planKind;
   final DateTime? expiresAtUtc;
 
   factory GeneratedCode.fromJson(Map<String, dynamic> json) => GeneratedCode(
     code: json['code'] as String,
     durationMinutes: (json['durationMinutes'] as num?)?.toInt() ?? 0,
     assignedToPhone: json['assignedToPhone'] as String?,
+    planKind: json['planKind'] as String?,
     expiresAtUtc: json['expiresAtUtc'] == null
         ? null
         : DateTime.parse(json['expiresAtUtc'] as String).toUtc(),

@@ -47,12 +47,16 @@ public class AdminRepository : IAdminRepository
     {
         try
         {
-            // Duration in minutes (precise): explicit minutes win, else days→minutes, else plan default.
-            var durationMinutes = dto.DurationMinutes is int dm && dm > 0
-                ? dm
-                : dto.DurationDays is int dd && dd > 0
-                    ? dd * 24 * 60
-                    : _planCalculator.PlanDays * 24 * 60;
+            // Duration in minutes (precise): a "Forever" code overrides everything with the sentinel;
+            // otherwise explicit minutes win, else days→minutes, else the plan default.
+            var durationMinutes = dto.Forever == true
+                ? PlanKinds.ForeverMinutes
+                : dto.DurationMinutes is int dm && dm > 0
+                    ? dm
+                    : dto.DurationDays is int dd && dd > 0
+                        ? dd * 24 * 60
+                        : _planCalculator.PlanDays * 24 * 60;
+            var planKind = PlanKinds.Label(durationMinutes);
 
             var count = Math.Clamp(dto.Count ?? 1, 1, MaxBatch);
             var assignedPhone = PhoneNumberUtil.Normalize(dto.Phone);
@@ -89,6 +93,7 @@ public class AdminRepository : IAdminRepository
                     Code = Prettify(raw),   // dashed form for readability; redeem tolerates either
                     DurationMinutes = durationMinutes,
                     DurationDays = durationMinutes / (24 * 60),
+                    PlanKind = planKind,
                     AssignedToPhone = assigned,
                     ExpiresAtUtc = expiresAt
                 });
@@ -124,6 +129,7 @@ public class AdminRepository : IAdminRepository
             user.DeviceId = null;
             user.DeviceLabel = null;
             user.DeviceRegisteredAtUtc = null;
+            user.LastModifiedAtUtc = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
             _logger.LogInformation("Admin reset device binding for user {UserId} ({Phone}).", user.Id, phone);
@@ -162,6 +168,7 @@ public class AdminRepository : IAdminRepository
             user.PlanPaidUntilUtc = now.AddSeconds(seconds);
             user.PlanStartedAtUtc = now;
             user.TrialStartedAtUtc = now.AddYears(-1);
+            user.LastModifiedAtUtc = now;
             await _context.SaveChangesAsync();
 
             _logger.LogInformation("Admin set plan for user {UserId} to expire in {Seconds}s.", user.Id, seconds);
@@ -191,6 +198,7 @@ public class AdminRepository : IAdminRepository
                 return ServiceResponse<bool>.NotFound("No account with that phone number.");
 
             user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
+            user.LastModifiedAtUtc = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
             _logger.LogInformation("Admin reset password for user {UserId}.", user.Id);
@@ -203,12 +211,50 @@ public class AdminRepository : IAdminRepository
         }
     }
 
+    public async Task<ServiceResponse<bool>> UpdatePhoneAsync(UpdatePhoneDto dto)
+    {
+        try
+        {
+            var current = PhoneNumberUtil.Normalize(dto.Phone);
+            var next = PhoneNumberUtil.Normalize(dto.NewPhone);
+            if (current.Length == 0 || next.Length == 0)
+                return ServiceResponse<bool>.BadRequest("Both the current and new phone numbers are required.");
+
+            var user = await _context.Users
+                .Include(u => u.Customer)
+                .FirstOrDefaultAsync(u => u.PhoneNumber == current);
+            if (user is null)
+                return ServiceResponse<bool>.NotFound("No account with that phone number.");
+
+            if (next != current)
+            {
+                var taken = await _context.Users.AnyAsync(u => u.PhoneNumber == next && u.Id != user.Id);
+                if (taken)
+                    return ServiceResponse<bool>.BadRequest("Another account already uses that phone number.");
+            }
+
+            user.PhoneNumber = next;
+            if (user.Customer is not null) user.Customer.PhoneNumber = next;
+            user.LastModifiedAtUtc = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Admin updated phone for user {UserId}: {Old} → {New}.", user.Id, current, next);
+            return ServiceResponse<bool>.Ok(true, "Phone number updated.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin failed to update phone number.");
+            return ServiceResponse<bool>.Error("Could not update the phone number.");
+        }
+    }
+
     public async Task<ServiceResponse<List<AdminUserDto>>> ListUsersAsync()
     {
         try
         {
+            // Most-recently-edited first: last admin action / redemption, falling back to creation.
             var users = await _context.Users
-                .OrderByDescending(u => u.CreatedAt)
+                .OrderByDescending(u => u.LastModifiedAtUtc ?? u.CreatedAt)
                 .ToListAsync();
 
             var rows = users.Select(u => new AdminUserDto
@@ -221,6 +267,9 @@ public class AdminRepository : IAdminRepository
                 HasDevice = !string.IsNullOrEmpty(u.DeviceId),
                 CreatedAtUtc = u.CreatedAt,
                 LastLoginAtUtc = u.LastLoginAtUtc,
+                LastModifiedAtUtc = u.LastModifiedAtUtc ?? u.CreatedAt,
+                PlanKind = PlanKinds.Label(u.PlanDurationMinutes),
+                PlanStartedAtUtc = u.PlanStartedAtUtc,
                 Plan = _planCalculator.Snapshot(u)
             }).ToList();
 

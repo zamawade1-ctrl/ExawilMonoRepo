@@ -32,8 +32,12 @@ object TransactionStore {
     const val STATUS_FAILED = "failed"
 
     private const val KEY_EVENTS = "events"
-    private const val MAX_EVENTS = 1000
+    const val MAX_EVENTS = 1000
     private const val TAG = "Xawil/TxStore"
+
+    /** Retention window for the "clear old" sweep: keep only the last ~month. */
+    private const val RETENTION_DAYS = 31L
+    private const val RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000L
 
     private val lock = Any()
 
@@ -62,7 +66,8 @@ object TransactionStore {
         status: String? = null,
         provider: String? = null,
         note: String? = null,
-    ): Map<String, Any?> {
+        dedupeKey: String? = null,
+    ): Map<String, Any?>? {
         val event = linkedMapOf<String, Any?>(
             "id" to System.currentTimeMillis(),
             "type" to type,
@@ -73,10 +78,18 @@ object TransactionStore {
             "provider" to provider,
             "note" to note,
             "timestampMs" to System.currentTimeMillis(),
+            "dedupeKey" to dedupeKey,
         )
         synchronized(lock) {
             val prefs = prefs(context)
             val arr = readArray(prefs)
+            // Idempotency: if this event carries a dedupe key already present in the
+            // ledger, skip it — so re-reading the same 898 receipt (or the same
+            // leftover balance) never double-counts the received total.
+            if (dedupeKey != null && containsDedupeKey(arr, dedupeKey)) {
+                Log.i(TAG, "Skipped duplicate $type (key=$dedupeKey).")
+                return null
+            }
             arr.put(JSONObject(event as Map<*, *>))
             // Trim oldest from the front so the array never grows unbounded.
             val trimmed = if (arr.length() > MAX_EVENTS) {
@@ -122,6 +135,54 @@ object TransactionStore {
         synchronized(lock) {
             prefs(context).edit().remove(KEY_EVENTS).apply()
         }
+    }
+
+    /**
+     * Storage usage snapshot for the dashboard/settings progress bar: how many
+     * events are stored out of [MAX_EVENTS], and the oldest event's timestamp.
+     */
+    fun storageInfo(context: Context): Map<String, Any?> {
+        val prefs = prefs(context)
+        val arr = synchronized(lock) { readArray(prefs) }
+        var oldest = 0L
+        for (i in 0 until arr.length()) {
+            val ts = arr.optJSONObject(i)?.optLong("timestampMs") ?: continue
+            if (ts > 0 && (oldest == 0L || ts < oldest)) oldest = ts
+        }
+        return mapOf(
+            "count" to arr.length(),
+            "max" to MAX_EVENTS,
+            "oldestTimestampMs" to oldest,
+            "retentionDays" to RETENTION_DAYS.toInt(),
+        )
+    }
+
+    /**
+     * "Refresh storage": drops every event older than the ~1-month retention
+     * window, keeping only the last month. Returns how many were removed.
+     */
+    fun clearExceptLastMonth(context: Context): Int {
+        val cutoff = System.currentTimeMillis() - RETENTION_MS
+        synchronized(lock) {
+            val prefs = prefs(context)
+            val arr = readArray(prefs)
+            val kept = JSONArray()
+            var removed = 0
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (o.optLong("timestampMs") >= cutoff) kept.put(o) else removed++
+            }
+            prefs.edit().putString(KEY_EVENTS, kept.toString()).apply()
+            Log.i(TAG, "Cleared $removed event(s) older than $RETENTION_DAYS days.")
+            return removed
+        }
+    }
+
+    private fun containsDedupeKey(arr: JSONArray, key: String): Boolean {
+        for (i in 0 until arr.length()) {
+            if (arr.optJSONObject(i)?.optString("dedupeKey") == key) return true
+        }
+        return false
     }
 
     private fun readArray(prefs: android.content.SharedPreferences): JSONArray {

@@ -34,6 +34,12 @@ public class GenerateActivationCodesDto
     /// <summary>How many codes to mint (1–100). Defaults to 1.</summary>
     public int? Count { get; set; }
 
+    /// <summary>
+    /// When true, mint a never-expiring "Forever" plan code — overrides the duration fields with
+    /// <c>PlanKinds.ForeverMinutes</c> so redemption sets the plan ~4000 years out.
+    /// </summary>
+    public bool? Forever { get; set; }
+
     /// <summary>Days until the code(s) expire if unredeemed. Optional alternative to <see cref="ExpiresInMinutes"/>.</summary>
     public int? ExpiresInDays { get; set; }
 
@@ -53,6 +59,10 @@ public class ActivationCodeDto
     public string Code { get; set; } = string.Empty;
     public int DurationDays { get; set; }
     public int DurationMinutes { get; set; }
+
+    /// <summary>Human plan-kind label ("1 month", "6 months", "1 year", "Forever", or a custom duration).</summary>
+    public string? PlanKind { get; set; }
+
     public string? AssignedToPhone { get; set; }
     public DateTime? ExpiresAtUtc { get; set; }
 }

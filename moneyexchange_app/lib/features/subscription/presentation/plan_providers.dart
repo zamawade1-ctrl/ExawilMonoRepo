@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/device/device_identity.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../../forwarding/data/forwarding_channel.dart';
 import '../data/subscription_api.dart';
@@ -22,10 +23,10 @@ final planControllerProvider =
     AsyncNotifierProvider<PlanController, PlanSnapshot?>(PlanController.new);
 
 class PlanController extends AsyncNotifier<PlanSnapshot?> {
-  /// How often we re-pull plan status from the backend while the app is open, so a plan that lapses
-  /// (or is changed server-side) is reflected without the user logging out and back in. Short enough
-  /// to feel real-time, long enough not to hammer the API.
-  static const _pollInterval = Duration(seconds: 20);
+  /// How often we re-pull the session (device validity + plan) from the backend while the app is
+  /// open, so an admin action (expire plan, reset device) takes effect in near-real-time — within a
+  /// few seconds, without the user logging out and back in.
+  static const _pollInterval = Duration(seconds: 3);
 
   /// One-shot timer that fires exactly when the current plan/trial window ends, so the app moves
   /// the user to the activation screen the instant access lapses — no logout, no waiting for a poll.
@@ -63,11 +64,17 @@ class PlanController extends AsyncNotifier<PlanSnapshot?> {
         // Corrupt cache — ignore and rely on the network refresh below.
       }
     }
-    // 2. Best-effort refresh from the backend (keeps the timestamps authoritative).
+    // 2. Best-effort refresh from the backend (keeps the timestamps authoritative). Uses the session
+    //    check so a device reset that happened while the app was closed signs the user out on open.
     try {
-      final fresh = await ref.read(subscriptionApiProvider).status();
-      snapshot = fresh;
-      await ref.read(sessionStorageProvider).savePlan(fresh.toJson());
+      final device = await DeviceIdentity.resolve();
+      final result = await ref.read(subscriptionApiProvider).session(device.id);
+      if (!result.valid) {
+        await ref.read(authControllerProvider.notifier).signOut();
+        return null;
+      }
+      snapshot = result.plan;
+      await ref.read(sessionStorageProvider).savePlan(result.plan.toJson());
     } catch (_) {
       // Offline / backend down: fall back to the cached snapshot.
     }
@@ -85,13 +92,24 @@ class PlanController extends AsyncNotifier<PlanSnapshot?> {
     return snapshot;
   }
 
-  /// Pulls fresh status from the backend and, if it differs from what we hold, emits it (a real
-  /// state change that makes the router re-gate an expired user to the activation screen). Silent on
-  /// failure — the offline path is covered by the local expiry timer.
+  /// Polls the backend session (device validity + plan). If the admin reset this device's binding the
+  /// session is no longer valid → sign out immediately so the account can re-bind on the next login
+  /// from any device. Otherwise, if the plan differs from what we hold, emit it (a real state change
+  /// that makes the router re-gate an expired user to the activation screen). Silent on failure — the
+  /// offline path is covered by the local expiry timer.
   Future<void> _refreshFromBackend() async {
     final current = state.value;
     try {
-      final fresh = await ref.read(subscriptionApiProvider).status();
+      final device = await DeviceIdentity.resolve();
+      final result = await ref.read(subscriptionApiProvider).session(device.id);
+
+      // Device was reset/rebound elsewhere → end this session now (real-time sign-out).
+      if (!result.valid) {
+        await ref.read(authControllerProvider.notifier).signOut();
+        return;
+      }
+
+      final fresh = result.plan;
       await ref.read(sessionStorageProvider).savePlan(fresh.toJson());
 
       final changed = current == null ||

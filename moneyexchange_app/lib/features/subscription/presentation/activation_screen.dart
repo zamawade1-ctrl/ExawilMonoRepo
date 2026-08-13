@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/config/app_info.dart';
+import '../../../core/config/billing_info.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../data/subscription_api.dart';
@@ -98,7 +99,9 @@ class _ActivationScreenState extends ConsumerState<ActivationScreen> {
                     ),
                     textAlign: TextAlign.center,
                   ),
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 24),
+                  const _PayToCard(),
+                  const SizedBox(height: 20),
                   TextField(
                     controller: _codeController,
                     textCapitalization: TextCapitalization.characters,
@@ -150,6 +153,98 @@ class _ActivationScreenState extends ConsumerState<ActivationScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Tells the user which Zaad / eDahab account to send the subscription payment to
+/// before they can be issued an activation code. Each number is copyable.
+class _PayToCard extends StatelessWidget {
+  const _PayToCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.account_balance_wallet_outlined,
+                  size: 18, color: theme.colorScheme.primary),
+              const SizedBox(width: 8),
+              Text('Send your payment to',
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Pay via Zaad or eDahab, then contact us for your activation code.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 12),
+          _PayRow(label: 'Zaad', number: BillingInfo.zaadNumber),
+          const SizedBox(height: 8),
+          _PayRow(label: 'eDahab', number: BillingInfo.edahabNumber),
+        ],
+      ),
+    );
+  }
+}
+
+class _PayRow extends StatelessWidget {
+  const _PayRow({required this.label, required this.number});
+  final String label;
+  final String number;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.primaryContainer,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(label,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onPrimaryContainer,
+                fontWeight: FontWeight.w700,
+              )),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: SelectableText(
+            number,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
+            ),
+          ),
+        ),
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.copy, size: 18),
+          tooltip: 'Copy $label number',
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: number));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('$label number copied')),
+            );
+          },
+        ),
+      ],
     );
   }
 }

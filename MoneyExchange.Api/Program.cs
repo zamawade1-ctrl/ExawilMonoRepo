@@ -75,6 +75,24 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Services.AddAuthorization();
 
+// --- CORS: let the admin web console (a browser SPA on a different origin) call the API ---
+// Origins are configurable so localhost (Vite dev) and the hosted Vercel domain can both be
+// allowed without a code change. Configure via Cors:AllowedOrigins (array) in appsettings /
+// env (Cors__AllowedOrigins__0, ...). Falls back to the Vite dev server if unset.
+const string AdminWebCorsPolicy = "AdminWebCors";
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+if (allowedOrigins is null || allowedOrigins.Length == 0)
+{
+    allowedOrigins = ["http://localhost:5173", "http://127.0.0.1:5173"];
+}
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(AdminWebCorsPolicy, policy => policy
+        .WithOrigins(allowedOrigins)
+        .AllowAnyHeader()
+        .AllowAnyMethod());
+});
+
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 
@@ -133,6 +151,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+app.UseCors(AdminWebCorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

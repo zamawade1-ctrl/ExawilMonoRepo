@@ -46,4 +46,9 @@ public class AdminController : ApiControllerBase
     [HttpPost("expire-plan")]
     public async Task<IActionResult> ExpirePlan([FromBody] ExpirePlanDto dto)
         => HandleResponse(await _adminRepository.ExpirePlanAsync(dto));
+
+    // POST: api/admin/update-phone  → correct a user's mistyped phone number
+    [HttpPost("update-phone")]
+    public async Task<IActionResult> UpdatePhone([FromBody] UpdatePhoneDto dto)
+        => HandleResponse(await _adminRepository.UpdatePhoneAsync(dto));
 }

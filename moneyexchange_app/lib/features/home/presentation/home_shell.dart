@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_info.dart';
 import '../../../core/routing/app_router.dart';
@@ -18,10 +19,15 @@ import '../../forwarding/presentation/forwarding_destination_card.dart';
 import '../../forwarding/presentation/forwarding_mode_card.dart';
 import '../../forwarding/presentation/forwarding_providers.dart';
 import '../../forwarding/presentation/forwarding_sim_card.dart';
+import '../../forwarding/presentation/widgets/auto_forward_countdown.dart';
+import '../../profile/presentation/profile_screen.dart';
 import '../../subscription/presentation/plan_badge.dart';
 import '../../subscription/presentation/plan_countdown_ring.dart';
 import '../../transactions/presentation/transactions_screen.dart';
 import 'widgets/promo_slideshow.dart';
+
+/// The support line the bottom-bar call button dials.
+const String _kCallNumber = '+252634480003';
 
 /// The signed-in app's frame: an app bar with a left navigation drawer (menu)
 /// and a "run sweep now" action, plus a bottom nav switching between Home and
@@ -39,7 +45,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
   /// One scroll controller per tab so re-tapping the current tab can scroll it
   /// back to the top (the Facebook-style "tap the active nav icon" gesture).
-  final _scrollControllers = List.generate(3, (_) => ScrollController());
+  final _scrollControllers = List.generate(4, (_) => ScrollController());
 
   @override
   void dispose() {
@@ -82,6 +88,21 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         if (Platform.isAndroid) {
           ref.read(nativeForwardingProvider.notifier).refresh();
         }
+      case 3:
+        // Profile reads the auth user; nothing to re-pull.
+        break;
+    }
+  }
+
+  /// Dials the support line from the center call button.
+  Future<void> _call() async {
+    final uri = Uri(scheme: 'tel', path: _kCallNumber);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the dialer.')),
+      );
     }
   }
 
@@ -120,28 +141,143 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           DashboardScreen(controller: _scrollControllers[0]),
           _ForwardingTab(controller: _scrollControllers[1]),
           TransactionsScreen(controller: _scrollControllers[2]),
+          ProfileScreen(controller: _scrollControllers[3]),
         ],
       ),
-      bottomNavigationBar: NavigationBar(
+      // A larger center call button sits in the notch, dialing the support line.
+      floatingActionButton: _CallButton(onPressed: _call),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      bottomNavigationBar: _BottomBar(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: _selectTab,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.dashboard_outlined),
-            selectedIcon: Icon(Icons.dashboard),
+        onSelect: _selectTab,
+      ),
+    );
+  }
+}
+
+/// The bottom navigation bar: four tabs (Home, Forwarding, Transactions,
+/// Profile) split around a center notch that holds the larger call button.
+class _BottomBar extends StatelessWidget {
+  const _BottomBar({required this.selectedIndex, required this.onSelect});
+
+  final int selectedIndex;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return BottomAppBar(
+      height: 68,
+      padding: EdgeInsets.zero,
+      shape: const CircularNotchedRectangle(),
+      notchMargin: 8,
+      child: Row(
+        children: [
+          _NavItem(
+            index: 0,
+            selectedIndex: selectedIndex,
+            icon: Icons.dashboard_outlined,
+            selectedIcon: Icons.dashboard,
             label: 'Home',
+            onSelect: onSelect,
           ),
-          NavigationDestination(
-            icon: Icon(Icons.swap_horiz_outlined),
-            selectedIcon: Icon(Icons.swap_horiz),
+          _NavItem(
+            index: 1,
+            selectedIndex: selectedIndex,
+            icon: Icons.swap_horiz_outlined,
+            selectedIcon: Icons.swap_horiz,
             label: 'Forwarding',
+            onSelect: onSelect,
           ),
-          NavigationDestination(
-            icon: Icon(Icons.receipt_long_outlined),
-            selectedIcon: Icon(Icons.receipt_long),
+          const SizedBox(width: 64), // room for the notched call button
+          _NavItem(
+            index: 2,
+            selectedIndex: selectedIndex,
+            icon: Icons.receipt_long_outlined,
+            selectedIcon: Icons.receipt_long,
             label: 'Transactions',
+            onSelect: onSelect,
+          ),
+          _NavItem(
+            index: 3,
+            selectedIndex: selectedIndex,
+            icon: Icons.person_outline,
+            selectedIcon: Icons.person,
+            label: 'Profile',
+            onSelect: onSelect,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _NavItem extends StatelessWidget {
+  const _NavItem({
+    required this.index,
+    required this.selectedIndex,
+    required this.icon,
+    required this.selectedIcon,
+    required this.label,
+    required this.onSelect,
+  });
+
+  final int index;
+  final int selectedIndex;
+  final IconData icon;
+  final IconData selectedIcon;
+  final String label;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final selected = index == selectedIndex;
+    final color =
+        selected ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant;
+    return Expanded(
+      child: InkResponse(
+        onTap: () => onSelect(index),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(selected ? selectedIcon : icon, color: color, size: 24),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: color,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The larger, brand-green center call button that dials the support line.
+class _CallButton extends StatelessWidget {
+  const _CallButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // Slightly bigger than the nav icons: a 64px round button raised into the notch.
+    return SizedBox(
+      width: 64,
+      height: 64,
+      child: FloatingActionButton(
+        onPressed: onPressed,
+        backgroundColor: theme.colorScheme.primary,
+        foregroundColor: theme.colorScheme.onPrimary,
+        elevation: 3,
+        shape: const CircleBorder(),
+        tooltip: 'Call support',
+        child: const Icon(Icons.call, size: 28),
       ),
     );
   }
@@ -407,7 +543,12 @@ class _ForwardingTab extends ConsumerWidget {
     if (Platform.isAndroid) {
       final status = ref.read(nativeForwardingProvider).value?.status;
       if (status?.mode == ForwardingMode.autoForward) {
-        futures.add(const ForwardingChannel().sweepNow());
+        // Pull resets the visible countdown to the next auto-forward AND runs a
+        // fresh sweep now: dial *800#, read the LIVE balance, and forward to the
+        // bank destination if it's ≥ $1 (fresh: true skips the cached-leftover path).
+        ref.read(autoForwardCountdownAnchorProvider.notifier).state =
+            DateTime.now();
+        futures.add(const ForwardingChannel().sweepNow(fresh: true));
       } else if (status?.hasPin ?? false) {
         // Flag the balance check as in flight so the "Run sweep" button disables
         // itself while *800# is being dialed. It re-enables when the balance comes
@@ -421,6 +562,12 @@ class _ForwardingTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // The auto-forward countdown shows below the mode section, only when the
+    // saved mode is auto-forward.
+    final status = ref.watch(nativeForwardingProvider).value?.status;
+    final showCountdown =
+        Platform.isAndroid && status?.mode == ForwardingMode.autoForward;
+
     return RefreshIndicator(
       onRefresh: () => _refresh(ref),
       child: SingleChildScrollView(
@@ -438,6 +585,14 @@ class _ForwardingTab extends ConsumerWidget {
             if (Platform.isAndroid) ...[
               const ForwardingModeCard(),
               const SizedBox(height: 20),
+              // Countdown to the next automatic forward (auto-forward mode only),
+              // directly below the forwarding-mode section.
+              if (showCountdown) ...[
+                AutoForwardCountdown(
+                  intervalMinutes: status!.intervalMinutes,
+                ),
+                const SizedBox(height: 20),
+              ],
             ],
             const ForwardingDestinationCard(),
             if (Platform.isAndroid) ...[

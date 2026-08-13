@@ -1,0 +1,121 @@
+/*
+ * Design tokens mirrored from the Flutter app's AppTheme
+ * (moneyexchange_app/lib/core/theme/app_theme.dart): white-dominant surfaces
+ * with a single Leon-green accent. Keep components free of hardcoded colours —
+ * reach for these variables so the whole console re-tints from one place.
+ */
+:root {
+  /* Leon green — the app's one accent colour. */
+  --leon-green: #2fa84f;
+  --leon-green-dark: #248a40;
+  --brand-icon-green: #26a65b;
+  --brand-name-green: #2e8b57;
+
+  /* Sign-in green panel gradient (matches the app-icon background gradient). */
+  --brand-gradient-start: #10b981;
+  --brand-gradient-end: #047857;
+
+  /* Surfaces */
+  --surface: #ffffff;
+  --on-surface: #14181f;
+  --surface-low: #f6f8f7;
+  --surface-container: #f1f5f3;
+  --surface-container-high: #ecf2ee;
+  --primary-container: #dbf3e1;
+  --on-primary-container: #248a40;
+
+  /* Lines & muted text */
+  --outline: #cbd5d0;
+  --outline-variant: #e1e8e4;
+  --muted: #667085;
+
+  /* Status colours */
+  --status-pro: var(--leon-green);
+  --status-trial: #c98a00;
+  --status-expired: #d64545;
+  --error: #d64545;
+
+  /* Shape */
+  --radius-sm: 10px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+
+  /* Typography — TT Norms Pro is the product face; fall back gracefully like the app does. */
+  --font-family: 'TT Norms Pro', system-ui, -apple-system, 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
+
+  --shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.04);
+  --shadow: 0 6px 24px rgba(20, 24, 31, 0.08);
+
+  /* App backdrop — a whisper of green tint sets the admin console subtly apart
+     from the pure-white customer app while keeping the same family. */
+  --app-bg: #f4f8f6;
+}
+
+/* Dark theme — toggled by stamping data-theme="dark" on <html>. Keeps the Leon
+   green accent but on deep slate surfaces. */
+:root[data-theme='dark'] {
+  --leon-green: #34c264;
+  --leon-green-dark: #2aa955;
+  --brand-name-green: #4fd07f;
+
+  --surface: #171b1f;
+  --on-surface: #e7edea;
+  --surface-low: #1e2429;
+  --surface-container: #222a2f;
+  --surface-container-high: #27313a;
+  --primary-container: #17351f;
+  --on-primary-container: #7ee3a0;
+
+  --outline: #3a464d;
+  --outline-variant: #2b343a;
+  --muted: #9aa7ad;
+
+  --status-trial: #e0a92b;
+  --app-bg: #0f1316;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family);
+  color: var(--on-surface);
+  background: var(--surface);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: var(--leon-green-dark);
+  text-decoration: none;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--leon-green);
+  outline-offset: 2px;
+}

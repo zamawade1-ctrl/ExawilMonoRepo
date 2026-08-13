@@ -282,8 +282,11 @@ class ForwardingChannel {
       _channel.invokeMethod('requestIgnoreBatteryOptimizations');
 
   /// Runs one balance-sweep cycle now (dial *800#, read balance, forward if
-  /// ≥ $1), for testing on a real device without waiting for the next tick.
-  Future<void> sweepNow() => _channel.invokeMethod('sweepNow');
+  /// ≥ $1), without waiting for the next tick. When [fresh] is true (the
+  /// auto-forward pull-to-refresh) it forces a live *800# balance read rather
+  /// than depositing the cached leftover.
+  Future<void> sweepNow({bool fresh = false}) =>
+      _channel.invokeMethod('sweepNow', {'fresh': fresh});
 
   /// Reads the account balance via *800# and publishes it to the leftover-balance
   /// stream WITHOUT forwarding — the check-messages "pull to refresh my balance"

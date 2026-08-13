@@ -8,6 +8,7 @@ import '../../security/presentation/change_pin_screen.dart';
 import 'update_password_screen.dart';
 import '../../../core/routing/app_router.dart';
 import '../../../core/theme/theme_mode_controller.dart';
+import '../../dashboard/presentation/widgets/storage_usage_card.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -108,6 +109,21 @@ class SettingsScreen extends ConsumerWidget {
             title: const Text('Privacy Policy'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => context.push(AppRoutes.privacy),
+          ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+            child: Text(
+              'Storage',
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: theme.colorScheme.primary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+            child: StorageUsageCard(showClear: true),
           ),
           const Divider(height: 1),
           ListTile(

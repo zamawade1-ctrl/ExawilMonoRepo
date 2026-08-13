@@ -29,6 +29,15 @@ public class SubscriptionController : ApiControllerBase
         return HandleResponse(await _subscriptionRepository.GetStatusAsync(userId));
     }
 
+    // GET: api/subscription/session?deviceId=  → { valid, reason, plan } for the app's fast session poll.
+    // valid=false once the device was reset/rebound → the app signs out in near-real-time.
+    [HttpGet("session")]
+    public async Task<IActionResult> Session([FromQuery] string? deviceId)
+    {
+        if (!TryGetAuthenticatedUserId(out var userId)) return Forbid();
+        return HandleResponse(await _subscriptionRepository.GetSessionAsync(userId, deviceId));
+    }
+
     // POST: api/subscription/redeem  → consumes an activation code, returns the new plan status
     [HttpPost("redeem")]
     public async Task<IActionResult> Redeem([FromBody] RedeemActivationDto dto)

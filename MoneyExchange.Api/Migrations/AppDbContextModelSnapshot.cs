@@ -284,6 +284,9 @@ namespace MoneyExchange.Api.Migrations
                     b.Property<DateTime>("LastLoginAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("LastModifiedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("PasswordHash")
                         .HasMaxLength(400)
                         .HasColumnType("character varying(400)");
@@ -294,6 +297,9 @@ namespace MoneyExchange.Api.Migrations
 
                     b.Property<bool>("PinEnabled")
                         .HasColumnType("boolean");
+
+                    b.Property<int?>("PlanDurationMinutes")
+                        .HasColumnType("integer");
 
                     b.Property<DateTime?>("PlanPaidUntilUtc")
                         .HasColumnType("timestamp with time zone");

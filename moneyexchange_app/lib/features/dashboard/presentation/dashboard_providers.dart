@@ -9,6 +9,15 @@ final deviceLedgerChannelProvider = Provider(
   (ref) => const DeviceLedgerChannel(),
 );
 
+/// On-device ledger storage usage (count / max), for the storage progress bar in
+/// the dashboard and settings. Recomputed whenever the ledger changes.
+final storageInfoProvider = FutureProvider<StorageInfo>((ref) async {
+  // Re-read whenever the ledger changes so the bar reflects the latest count.
+  ref.watch(deviceLedgerProvider);
+  final channel = ref.watch(deviceLedgerChannelProvider);
+  return channel.getStorageInfo();
+});
+
 /// The on-device transaction ledger, newest-first. Loads the full history from
 /// the native store and then listens to the live event stream, prepending each
 /// newly recorded transaction so the dashboard/transactions update in real time

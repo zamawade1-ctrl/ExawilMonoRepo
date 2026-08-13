@@ -157,23 +157,19 @@ class AuthController extends AsyncNotifier<AppUser?> {
     state = const AsyncLoading();
     try {
       final user = await call();
-      // Re-point the native on-device stores AND the per-user Riverpod providers
-      // at THIS user, so a freshly signed-in user sees their own data (forwarding
-      // config, destination, ledger, dashboard) instead of whoever was signed in
-      // before. Without this, login/register only changed the JWT — the native
-      // namespace + these providers stayed on the previous user, so a new user
-      // inherited the old user's dashboard and forwarding settings.
-      //
-      // Done BEFORE flipping state to signed-in so that when the router then
-      // navigates to /home, the home providers build fresh against the new user's
-      // namespace — no flash of the previous user's data.
-      await _applyActiveUser(user.id);
+      // Flip to signed-in FIRST so the router redirects to /home instantly the
+      // moment credentials check out — the redirect no longer waits on the native
+      // active-user re-point (a method-channel round trip). A fresh phone/password
+      // sign-in already proves identity, so don't make the user re-enter their PIN
+      // on top of it (the PIN gate re-engages on next reopen / cold start).
       state = AsyncData(user);
-      // A fresh phone/password sign-in already proves identity, so don't make the
-      // user immediately re-enter their PIN on top of it — the PIN gate re-engages
-      // on the next reopen / cold start. (A brand-new sign-up has no PIN yet and is
-      // routed to the set-PIN screen by the router.)
       ref.read(pinLockControllerProvider.notifier).markUnlocked();
+      // Re-point the native on-device stores AND the per-user Riverpod providers at
+      // THIS user, so they see their own data (forwarding config, destination,
+      // ledger, dashboard) instead of whoever was signed in before. This invalidates
+      // the per-user providers, so /home rebuilds fresh against the new namespace —
+      // any momentary stale frame is corrected the instant this completes.
+      await _applyActiveUser(user.id);
     } catch (error) {
       // Don't leave the controller in an error state (the router would keep the
       // user signed out with no clear recovery); restore the prior state and let

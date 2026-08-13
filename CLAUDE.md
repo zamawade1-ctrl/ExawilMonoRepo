@@ -12,12 +12,22 @@ backend polling job is the server-side fallback).
 > The Google code path (`IGoogleTokenVerifier`, `POST /api/auth/google`) is left in place but
 > **dormant** — the app no longer uses it.
 
-Two projects live side by side in this repo:
+Three projects live side by side in this repo:
 
 ```
 MoneyExchange.Api/     ASP.NET Core backend (this is the primary README below)
 moneyexchange_app/     Flutter frontend (Android + iOS)
+admin_web/             React + TypeScript admin web console (Admin-role only)
 ```
+
+> **admin_web** is the browser counterpart to the mobile app's admin surface: a React 19 + Vite +
+> TypeScript SPA (zustand for auth state, zod for form + API-response validation) that calls the
+> same role-gated `/api/admin/*` endpoints to manage customers, plans, and activation codes. The
+> JWT is kept in `sessionStorage` (tab-scoped) and every admin endpoint is `[Authorize(Roles =
+> "Admin")]` server-side, so the token — not the client — is the security boundary. The backend has
+> a `Cors:AllowedOrigins` policy (defaults to the Vite dev server) that must include the admin web
+> origin. Deploys to Vercel with **Root Directory = `admin_web`** and `VITE_API_BASE_URL` pointing
+> at the hosted API. See `admin_web/README.md`.
 
 ---
 

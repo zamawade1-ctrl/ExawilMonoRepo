@@ -43,6 +43,18 @@ public class ResetPasswordDto
     public string NewPassword { get; set; } = string.Empty;
 }
 
+/// <summary>Admin corrects a user's phone number (e.g. mistyped at sign-up), identified by their current phone.</summary>
+public class UpdatePhoneDto
+{
+    /// <summary>The account's current (possibly wrong) phone number.</summary>
+    [Required, MaxLength(20)]
+    public string Phone { get; set; } = string.Empty;
+
+    /// <summary>The corrected phone number to set.</summary>
+    [Required, MaxLength(20)]
+    public string NewPhone { get; set; } = string.Empty;
+}
+
 /// <summary>One row of the admin "all users" view: identity + their live plan snapshot.</summary>
 public class AdminUserDto
 {
@@ -54,5 +66,15 @@ public class AdminUserDto
     public bool HasDevice { get; set; }
     public DateTime CreatedAtUtc { get; set; }
     public DateTime LastLoginAtUtc { get; set; }
+
+    /// <summary>When the account was last edited (admin action / redemption); drives list ordering.</summary>
+    public DateTime LastModifiedAtUtc { get; set; }
+
+    /// <summary>The paid-plan kind label ("1 month", "6 months", "1 year", "Forever"), or null if never paid.</summary>
+    public string? PlanKind { get; set; }
+
+    /// <summary>When the current paid (Pro) period began, or null if the user has never paid. For the admin billing view.</summary>
+    public DateTime? PlanStartedAtUtc { get; set; }
+
     public PlanStatusDto Plan { get; set; } = new();
 }

@@ -17,6 +17,7 @@ import '../../features/security/presentation/set_pin_screen.dart';
 import '../../features/settings/presentation/settings_screen.dart';
 import '../../features/subscription/domain/plan_snapshot.dart';
 import '../../features/subscription/presentation/activation_screen.dart';
+import '../../features/subscription/presentation/billing_screen.dart';
 import '../../features/subscription/presentation/plan_providers.dart';
 
 class AppRoutes {
@@ -32,6 +33,7 @@ class AppRoutes {
   static const about = '/about';
   static const contact = '/contact';
   static const privacy = '/privacy';
+  static const billing = '/billing';
 }
 
 final appRouterProvider = Provider<GoRouter>((ref) {
@@ -49,9 +51,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final user = authState.value;
       final loc = state.matchedLocation;
 
-      // 1. Signed out → only the sign-in screen is reachable.
+      // 1. Signed out → the sign-in screen and the public pricing page are reachable.
       if (user == null) {
-        return loc == AppRoutes.signIn ? null : AppRoutes.signIn;
+        const signedOutAllowed = {AppRoutes.signIn, AppRoutes.billing};
+        return signedOutAllowed.contains(loc) ? null : AppRoutes.signIn;
       }
 
       // 1a. Admins skip the customer PIN/plan gates entirely and live in the admin console
@@ -63,6 +66,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           AppRoutes.about,
           AppRoutes.contact,
           AppRoutes.privacy,
+          AppRoutes.billing,
         };
         return adminAllowed.contains(loc) ? null : AppRoutes.admin;
       }
@@ -138,6 +142,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: AppRoutes.privacy,
         builder: (context, state) => const PrivacyPolicyScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.billing,
+        builder: (context, state) => const BillingScreen(),
       ),
     ],
   );

@@ -1,14 +1,38 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../data/admin_api.dart';
 import '../domain/admin_models.dart';
 import 'admin_providers.dart';
 
-/// Admin page to mint an activation code for a specific customer. Duration and expiry are entered in
-/// days + hours + minutes, so a 2-minute test code is possible (not just whole days). The generated
-/// code is shown with a copy button so the admin can send it over WhatsApp.
+/// The plan kinds an admin can grant. "Forever" is a backend sentinel (never
+/// expires); "custom" reveals the days/hours/minutes steppers.
+enum _PlanKind { month, sixMonths, year, forever, custom }
+
+extension on _PlanKind {
+  String get label => switch (this) {
+    _PlanKind.month => '1 month',
+    _PlanKind.sixMonths => '6 months',
+    _PlanKind.year => '1 year',
+    _PlanKind.forever => 'Forever',
+    _PlanKind.custom => 'Custom',
+  };
+
+  /// Duration in minutes for the fixed kinds (custom/forever handled separately).
+  int get minutes => switch (this) {
+    _PlanKind.month => 30 * 1440,
+    _PlanKind.sixMonths => 182 * 1440,
+    _PlanKind.year => 365 * 1440,
+    _ => 0,
+  };
+}
+
+/// Admin page to mint activation code(s) for a customer. The admin picks a plan
+/// kind (1 month / 6 months / 1 year / Forever / custom), how many codes to mint,
+/// and an expiry. Each generated code has a Share button that opens the system
+/// share sheet (WhatsApp, SMS, …) so it's one tap to send — no copy/paste.
 class GenerateCodeScreen extends ConsumerStatefulWidget {
   const GenerateCodeScreen({super.key, this.initialPhone});
 
@@ -22,21 +46,26 @@ class _GenerateCodeScreenState extends ConsumerState<GenerateCodeScreen> {
   late final TextEditingController _phone =
       TextEditingController(text: widget.initialPhone ?? '');
 
-  // Duration (how long the plan lasts once redeemed).
+  _PlanKind _kind = _PlanKind.month;
+
+  // Custom duration (only used when _kind == custom).
   int _durDays = 30;
   int _durHours = 0;
   int _durMinutes = 0;
 
-  // Expiry (how long the unredeemed code stays valid).
+  // How many codes to mint at once.
+  int _count = 1;
+
+  // Expiry (how long an unredeemed code stays valid).
   int _expDays = 14;
   int _expHours = 0;
   int _expMinutes = 0;
 
   bool _busy = false;
   String? _error;
-  GeneratedCode? _result;
+  List<GeneratedCode> _results = const [];
 
-  int get _durationMinutes => _durDays * 1440 + _durHours * 60 + _durMinutes;
+  int get _customMinutes => _durDays * 1440 + _durHours * 60 + _durMinutes;
   int get _expiryMinutes => _expDays * 1440 + _expHours * 60 + _expMinutes;
 
   @override
@@ -51,22 +80,26 @@ class _GenerateCodeScreenState extends ConsumerState<GenerateCodeScreen> {
       setState(() => _error = 'Enter the customer\'s phone number.');
       return;
     }
-    if (_durationMinutes <= 0) {
+    final forever = _kind == _PlanKind.forever;
+    final durationMinutes = _kind == _PlanKind.custom ? _customMinutes : _kind.minutes;
+    if (!forever && durationMinutes <= 0) {
       setState(() => _error = 'Duration must be greater than zero.');
       return;
     }
     setState(() {
       _busy = true;
       _error = null;
-      _result = null;
+      _results = const [];
     });
     try {
-      final code = await ref.read(adminApiProvider).generateCode(
+      final codes = await ref.read(adminApiProvider).generateCodes(
             phone: phone,
-            durationMinutes: _durationMinutes,
+            durationMinutes: forever ? 1 : durationMinutes,
             expiresInMinutes: _expiryMinutes,
+            forever: forever,
+            count: _count,
           );
-      setState(() => _result = code);
+      setState(() => _results = codes);
     } on AdminException catch (e) {
       setState(() => _error = e.message);
     } catch (_) {
@@ -74,14 +107,6 @@ class _GenerateCodeScreenState extends ConsumerState<GenerateCodeScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  void _applyPreset(int days, int hours, int minutes) {
-    setState(() {
-      _durDays = days;
-      _durHours = hours;
-      _durMinutes = minutes;
-    });
   }
 
   @override
@@ -103,30 +128,39 @@ class _GenerateCodeScreenState extends ConsumerState<GenerateCodeScreen> {
             ),
           ),
           const SizedBox(height: 24),
-          Text('Plan duration', style: theme.textTheme.titleMedium),
+          Text('Plan', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 4,
             children: [
-              _PresetChip('2 min', () => _applyPreset(0, 0, 2)),
-              _PresetChip('1 hour', () => _applyPreset(0, 1, 0)),
-              _PresetChip('1 day', () => _applyPreset(1, 0, 0)),
-              _PresetChip('7 days', () => _applyPreset(7, 0, 0)),
-              _PresetChip('30 days', () => _applyPreset(30, 0, 0)),
-              _PresetChip('90 days', () => _applyPreset(90, 0, 0)),
+              for (final k in _PlanKind.values)
+                ChoiceChip(
+                  label: Text(k.label),
+                  selected: _kind == k,
+                  onSelected: (_) => setState(() => _kind = k),
+                ),
             ],
           ),
-          const SizedBox(height: 12),
-          _DhmRow(
-            days: _durDays,
-            hours: _durHours,
-            minutes: _durMinutes,
-            onChanged: (d, h, m) => setState(() {
-              _durDays = d;
-              _durHours = h;
-              _durMinutes = m;
-            }),
+          if (_kind == _PlanKind.custom) ...[
+            const SizedBox(height: 12),
+            _DhmRow(
+              days: _durDays,
+              hours: _durHours,
+              minutes: _durMinutes,
+              onChanged: (d, h, m) => setState(() {
+                _durDays = d;
+                _durHours = h;
+                _durMinutes = m;
+              }),
+            ),
+          ],
+          const SizedBox(height: 24),
+          Text('How many codes', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          _CountStepper(
+            value: _count,
+            onChanged: (v) => setState(() => _count = v),
           ),
           const SizedBox(height: 24),
           Text('Code expires in (if unredeemed)', style: theme.textTheme.titleMedium),
@@ -156,11 +190,11 @@ class _GenerateCodeScreenState extends ConsumerState<GenerateCodeScreen> {
                 ? const SizedBox(
                     width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.vpn_key),
-            label: const Text('Generate code'),
+            label: Text(_count > 1 ? 'Generate $_count codes' : 'Generate code'),
           ),
-          if (_result != null) ...[
-            const SizedBox(height: 24),
-            _ResultCard(result: _result!),
+          for (final r in _results) ...[
+            const SizedBox(height: 16),
+            _ResultCard(result: r),
           ],
         ],
       ),
@@ -172,6 +206,11 @@ class _ResultCard extends StatelessWidget {
   const _ResultCard({required this.result});
   final GeneratedCode result;
 
+  String get _shareText =>
+      'Your Xawil Pro activation code: ${result.code}'
+      '${result.planKind != null ? ' (${result.planKind})' : ''}. '
+      'Open the Xawil app → Activate, and enter this code.';
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -182,70 +221,82 @@ class _ResultCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Activation code', style: theme.textTheme.labelLarge),
+            Text(
+              'Activation code${result.planKind != null ? ' · ${result.planKind}' : ''}',
+              style: theme.textTheme.labelLarge,
+            ),
             const SizedBox(height: 8),
+            SelectableText(
+              result.code,
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.5,
+              ),
+            ),
+            const SizedBox(height: 4),
+            if (result.assignedToPhone != null)
+              Text('Bound to ${result.assignedToPhone}',
+                  style: theme.textTheme.bodySmall),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
-                  child: SelectableText(
-                    result.code,
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5,
-                    ),
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.copy, size: 18),
+                    label: const Text('Copy'),
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: result.code));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Code copied')),
+                      );
+                    },
                   ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.copy),
-                  tooltip: 'Copy',
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: result.code));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Code copied')),
-                    );
-                  },
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    icon: const Icon(Icons.share, size: 18),
+                    label: const Text('Share'),
+                    onPressed: () =>
+                        Share.share(_shareText, subject: 'Xawil activation code'),
+                  ),
                 ),
               ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Grants ${_dhm(result.durationMinutes)}'
-              '${result.assignedToPhone != null ? ' · bound to ${result.assignedToPhone}' : ''}',
-              style: theme.textTheme.bodySmall,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Send this to the customer over WhatsApp. Only their number can redeem it.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onPrimaryContainer.withValues(alpha: 0.8),
-              ),
             ),
           ],
         ),
       ),
     );
   }
-
-  static String _dhm(int minutes) {
-    final d = minutes ~/ 1440;
-    final h = (minutes % 1440) ~/ 60;
-    final m = minutes % 60;
-    final parts = <String>[];
-    if (d > 0) parts.add('${d}d');
-    if (h > 0) parts.add('${h}h');
-    if (m > 0) parts.add('${m}m');
-    return parts.isEmpty ? '0m' : parts.join(' ');
-  }
 }
 
-class _PresetChip extends StatelessWidget {
-  const _PresetChip(this.label, this.onTap);
-  final String label;
-  final VoidCallback onTap;
+/// Simple +/- stepper for the code count (1–100).
+class _CountStepper extends StatelessWidget {
+  const _CountStepper({required this.value, required this.onChanged});
+  final int value;
+  final ValueChanged<int> onChanged;
 
   @override
-  Widget build(BuildContext context) =>
-      ActionChip(label: Text(label), onPressed: onTap);
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        IconButton.filledTonal(
+          onPressed: value <= 1 ? null : () => onChanged(value - 1),
+          icon: const Icon(Icons.remove),
+        ),
+        SizedBox(
+          width: 56,
+          child: Text('$value',
+              textAlign: TextAlign.center, style: theme.textTheme.titleLarge),
+        ),
+        IconButton.filledTonal(
+          onPressed: value >= 100 ? null : () => onChanged(value + 1),
+          icon: const Icon(Icons.add),
+        ),
+      ],
+    );
+  }
 }
 
 /// A days / hours / minutes stepper row.

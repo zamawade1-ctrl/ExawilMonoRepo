@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../domain/dashboard_data.dart';
 import 'dashboard_providers.dart';
 import 'widgets/dashboard_charts.dart';
+import 'widgets/storage_usage_card.dart';
 
 /// The signed-in home: an at-a-glance view of money received vs forwarded, the
 /// destinations it went to, a weekly summary, and a live "today's forwarded"
@@ -57,6 +58,10 @@ class DashboardScreen extends ConsumerWidget {
           _SectionTitle('This week', subtitle: 'Last 7 days'),
           const SizedBox(height: 12),
           WeeklySummaryCard(data: data),
+          const SizedBox(height: 24),
+          _SectionTitle('Storage', subtitle: 'On-device transaction records'),
+          const SizedBox(height: 12),
+          const StorageUsageCard(),
         ],
       ),
     );

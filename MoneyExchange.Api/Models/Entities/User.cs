@@ -60,6 +60,22 @@ public class User
     public DateTime? PlanStartedAtUtc { get; set; }
 
     /// <summary>
+    /// The duration (in minutes) the most recently redeemed activation code granted — the source for
+    /// the admin's "plan kind" label (1 month / 6 months / 1 year / Forever). A very large value
+    /// (see <c>PlanKinds.ForeverMinutes</c>) encodes a never-expiring "Forever" plan. Null until the
+    /// user has redeemed a paid plan.
+    /// </summary>
+    public int? PlanDurationMinutes { get; set; }
+
+    /// <summary>
+    /// When this account was last mutated by an admin action (device/password reset, plan change,
+    /// phone edit) or a plan redemption. Drives the admin list's "most-recently-edited first"
+    /// ordering. Null for accounts untouched since before this field existed (falls back to
+    /// <see cref="CreatedAt"/> for ordering).
+    /// </summary>
+    public DateTime? LastModifiedAtUtc { get; set; }
+
+    /// <summary>
     /// PBKDF2 hash of the password (ASP.NET Core <c>PasswordHasher</c> format), never the raw
     /// password. Null only for legacy Google-only identities. <see cref="JsonIgnore"/>d so it's
     /// never serialized out through the API.

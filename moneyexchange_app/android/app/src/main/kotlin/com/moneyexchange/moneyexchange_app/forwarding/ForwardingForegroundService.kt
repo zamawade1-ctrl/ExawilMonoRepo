@@ -76,6 +76,13 @@ class ForwardingForegroundService : Service() {
     private var sweepRunning = false
     private var manualQueued = false
 
+    /**
+     * When a queued manual sweep must skip the fast cached-leftover deposit and do a
+     * live `*800#` balance read instead (set by the pull-to-refresh). Latches true
+     * while any queued manual sweep requested freshness; consumed by the worker.
+     */
+    private var manualForceFresh = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -106,7 +113,7 @@ class ForwardingForegroundService : Service() {
                 if (ForwardingSettings(this).mode == ForwardingMode.AUTO_FORWARD) {
                     resetIntervalCountdown()
                 }
-                requestManualSweep()
+                requestManualSweep(intent.getBooleanExtra(EXTRA_FRESH, false))
             }
 
             ACTION_CHECK_BALANCE -> {
@@ -177,9 +184,12 @@ class ForwardingForegroundService : Service() {
      * immediately when idle, or right after the current sweep when busy — without
      * waiting for the interval timer.
      */
-    private fun requestManualSweep() {
+    private fun requestManualSweep(forceFresh: Boolean = false) {
         synchronized(sweepLock) {
             manualQueued = true
+            // Latch freshness so a queued fresh refresh isn't downgraded by a later
+            // non-fresh one draining in the same worker pass.
+            if (forceFresh) manualForceFresh = true
             if (sweepRunning) {
                 Log.i(TAG, "Sweep running; manual refresh queued to run right after.")
                 return
@@ -369,12 +379,15 @@ class ForwardingForegroundService : Service() {
             var done = false
             while (!done) {
                 val wasManual: Boolean
+                val forceFresh: Boolean
                 synchronized(sweepLock) {
                     wasManual = manualQueued
+                    forceFresh = manualForceFresh
                     manualQueued = false
+                    manualForceFresh = false
                 }
                 try {
-                    withWakeLock { runOneSweep(wasManual) }
+                    withWakeLock { runOneSweep(wasManual, forceFresh) }
                     if (wasManual) {
                         val settings = ForwardingSettings(this)
                         if (settings.enabled && settings.mode == ForwardingMode.AUTO_FORWARD) {
@@ -537,7 +550,7 @@ class ForwardingForegroundService : Service() {
      * Runs exactly one balance-check → (maybe) forward cycle, blocking on this
      * background thread while the accessibility service drives the dialogs.
      */
-    private fun runOneSweep(isManual: Boolean) {
+    private fun runOneSweep(isManual: Boolean, forceFresh: Boolean = false) {
         val settings = ForwardingSettings(this)
         val primary = settings.pin
         if (!settings.isReady() || primary == null) {
@@ -555,7 +568,11 @@ class ForwardingForegroundService : Service() {
         // single session halves that (~15s). Only for a MANUAL bank sweep ("Run sweep")
         // and only once we HAVE a known balance — the periodic auto-forward poller and
         // the first-ever sweep still take the accurate fresh-read path below.
-        if (isManual &&
+        // The pull-to-refresh (forceFresh) always takes the accurate fresh-read path
+        // below so it re-checks the LIVE balance via *800# and forwards if ≥ $1 — the
+        // fast cached deposit is only for the explicit "Run sweep" button.
+        if (!forceFresh &&
+            isManual &&
             settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT &&
             settings.lastLeftoverBalance != null
         ) {
@@ -902,6 +919,13 @@ class ForwardingForegroundService : Service() {
         /** The SMS "Tixraac" ref, for dedup, on [ACTION_FORWARD_AMOUNT]. */
         private const val EXTRA_REF = "exchange_ref"
 
+        /**
+         * On [ACTION_SWEEP_NOW]: force a fresh `*800#` balance read instead of the
+         * fast cached-leftover deposit. Set by the auto-forward pull-to-refresh, so a
+         * swipe-down always re-checks the live balance and forwards if it's ≥ $1.
+         */
+        private const val EXTRA_FRESH = "force_fresh"
+
         private const val TAG = "Xawil/FgService"
         private const val CHANNEL_ID = "xawil_forwarding"
         private const val NOTIFICATION_ID = 4711
@@ -964,9 +988,16 @@ class ForwardingForegroundService : Service() {
 
         /**
          * Requests one immediate `*800#` balance sweep without waiting for the next
-         * tick — the auto-forward manual refresh / "sweep now" action.
+         * tick — the auto-forward manual refresh / "sweep now" action. When
+         * [fresh] is true (the pull-to-refresh), forces a live `*800#` balance read
+         * rather than depositing the cached leftover.
          */
-        fun sweepNow(context: Context) = send(context, ACTION_SWEEP_NOW)
+        fun sweepNow(context: Context, fresh: Boolean = false) {
+            val intent = Intent(context, ForwardingForegroundService::class.java)
+                .setAction(ACTION_SWEEP_NOW)
+                .putExtra(EXTRA_FRESH, fresh)
+            startService(context, intent)
+        }
 
         /**
          * Reads the balance via `*800#` and updates the leftover readout WITHOUT

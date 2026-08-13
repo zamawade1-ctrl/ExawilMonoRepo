@@ -39,6 +39,27 @@ public class SubscriptionRepository : ISubscriptionRepository
         return ServiceResponse<PlanStatusDto>.Ok(_planCalculator.Snapshot(user));
     }
 
+    public async Task<ServiceResponse<SessionStatusDto>> GetSessionAsync(int userId, string? deviceId)
+    {
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        if (user is null)
+            return ServiceResponse<SessionStatusDto>.Ok(
+                new SessionStatusDto { Valid = false, Reason = "account-not-found" });
+
+        // The session is valid while the caller's device still matches the account's bound device.
+        // When the client presents no device id (iOS/tests) the lock isn't enforced → treat as valid.
+        // After an admin device-reset the bound DeviceId is cleared, so a previously-bound device now
+        // mismatches → invalid → the app signs out and the account can re-bind on the next login.
+        var deviceValid = string.IsNullOrEmpty(deviceId) || user.DeviceId == deviceId;
+
+        return ServiceResponse<SessionStatusDto>.Ok(new SessionStatusDto
+        {
+            Valid = deviceValid,
+            Reason = deviceValid ? null : "device-reset",
+            Plan = _planCalculator.Snapshot(user),
+        });
+    }
+
     public async Task<ServiceResponse<PlanStatusDto>> RedeemAsync(int userId, RedeemActivationDto dto)
     {
         try
@@ -85,6 +106,9 @@ public class SubscriptionRepository : ISubscriptionRepository
             // the existing start when merely extending an active plan.
             if (!stillActive || user.PlanStartedAtUtc is null)
                 user.PlanStartedAtUtc = now;
+            // Record the granted duration (drives the admin "plan kind" label) and mark as edited.
+            user.PlanDurationMinutes = grantMinutes;
+            user.LastModifiedAtUtc = now;
 
             activation.IsRedeemed = true;
             activation.RedeemedByUserId = userId;

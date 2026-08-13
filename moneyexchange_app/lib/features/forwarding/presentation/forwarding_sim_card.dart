@@ -103,24 +103,25 @@ class _ForwardingSimCardState extends ConsumerState<ForwardingSimCard> {
           style: theme.textTheme.titleMedium,
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<int>(
-          initialValue: _selected,
-          decoration: const InputDecoration(labelText: 'SIM card'),
-          items: [
-            const DropdownMenuItem(
-              value: _systemDefault,
-              child: Text('System default'),
-            ),
-            for (final sim in sims)
-              DropdownMenuItem(
-                value: sim.subscriptionId,
-                child: Text(sim.label),
-              ),
-          ],
-          onChanged: _saving
-              ? null
-              : (v) => setState(() => _selected = v ?? _systemDefault),
+        // Radio-style SIM cards (same look as the forwarding-mode cards): the
+        // selected one fills green. Shows each SIM's name and number.
+        _SimRadioTile(
+          title: 'System default',
+          subtitle: 'Let the phone choose the SIM',
+          selected: _selected == _systemDefault,
+          onTap: _saving ? null : () => setState(() => _selected = _systemDefault),
         ),
+        for (final sim in sims) ...[
+          const SizedBox(height: 10),
+          _SimRadioTile(
+            title: sim.label,
+            subtitle: sim.number ?? 'Number unavailable',
+            selected: _selected == sim.subscriptionId,
+            onTap: _saving
+                ? null
+                : () => setState(() => _selected = sim.subscriptionId),
+          ),
+        ],
         if (sims.isEmpty) ...[
           const SizedBox(height: 12),
           Row(
@@ -156,6 +157,79 @@ class _ForwardingSimCardState extends ConsumerState<ForwardingSimCard> {
               : const Text('Save SIM'),
         ),
       ],
+    );
+  }
+}
+
+/// One selectable SIM option, styled like the forwarding-mode radio cards: the
+/// selected card fills with the brand green and flips its text/radio to white.
+/// Shows the SIM name (title) and number (subtitle). A null [onTap] disables it.
+class _SimRadioTile extends StatelessWidget {
+  const _SimRadioTile({
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final background = selected ? scheme.primary : scheme.surfaceContainerHighest;
+    final foreground = selected ? Colors.white : scheme.onSurface;
+    final subColor = selected
+        ? Colors.white.withValues(alpha: 0.85)
+        : scheme.onSurfaceVariant;
+
+    return Material(
+      color: background,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? scheme.primary : scheme.outlineVariant,
+              width: 1.5,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.sim_card, color: foreground, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: foreground,
+                          fontWeight: FontWeight.w600,
+                        )),
+                    const SizedBox(height: 2),
+                    Text(subtitle,
+                        style: theme.textTheme.bodySmall?.copyWith(color: subColor)),
+                  ],
+                ),
+              ),
+              Icon(
+                selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                color: selected ? Colors.white : scheme.onSurfaceVariant,
+                size: 22,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -1,8 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/config/app_info.dart';
+import '../../../core/routing/app_router.dart';
+import '../../info/presentation/privacy_policy_screen.dart';
 import 'auth_providers.dart';
+
+/// The Somali country calling code. The phone field only ever collects the 9
+/// national digits; this prefix is fixed in the UI and prepended on submit, so a
+/// user can't mistype or omit it.
+const String _kCountryCode = '+252';
 
 /// The two things a signed-out user can do on the first page.
 enum _AuthMode { signIn, signUp }
@@ -27,6 +36,9 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
   _AuthMode _mode = _AuthMode.signIn;
   bool _obscurePassword = true;
 
+  /// Sign-up requires agreeing to the privacy policy first.
+  bool _agreedToPrivacy = false;
+
   bool get _isSignUp => _mode == _AuthMode.signUp;
 
   @override
@@ -47,6 +59,17 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     final signingUp = _isSignUp;
+    // Can't sign up without agreeing to the privacy policy.
+    if (signingUp && !_agreedToPrivacy) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          _snack(Theme.of(context).colorScheme,
+              'Please agree to the Privacy Policy to sign up.',
+              success: false),
+        );
+      return;
+    }
     final notifier = ref.read(authControllerProvider.notifier);
     // Captured before the await: on success the router immediately swaps this
     // screen for /home, but MaterialApp's root ScaffoldMessenger survives the
@@ -55,16 +78,20 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final scheme = Theme.of(context).colorScheme;
 
+    // The field holds only the 9 national digits; the fixed +252 prefix is
+    // prepended here so the backend always receives a full E.164-style number.
+    final phoneNumber = '$_kCountryCode${_phoneController.text.trim()}';
+
     try {
       if (signingUp) {
         await notifier.register(
           fullName: _fullNameController.text.trim(),
-          phoneNumber: _phoneController.text.trim(),
+          phoneNumber: phoneNumber,
           password: _passwordController.text,
         );
       } else {
         await notifier.login(
-          phoneNumber: _phoneController.text.trim(),
+          phoneNumber: phoneNumber,
           password: _passwordController.text,
         );
       }
@@ -210,6 +237,14 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                             : "Don't have an account? Sign up",
                       ),
                     ),
+                    const SizedBox(height: 4),
+                    // Pricing is public: reachable before signing in (see the router's
+                    // signed-out allow-list).
+                    OutlinedButton.icon(
+                      onPressed: () => context.push(AppRoutes.billing),
+                      icon: const Icon(Icons.workspace_premium_outlined),
+                      label: const Text('View plans & pricing'),
+                    ),
                   ],
                 ),
               ),
@@ -221,9 +256,11 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
   }
 
   /// The mode-specific fields. Phone + password are shared; sign-up adds a name.
+  /// Every field carries an explicit label above it for clarity.
   List<Widget> _fields() {
     return [
       if (_isSignUp) ...[
+        const _FieldLabel('Full name'),
         _TextField(
           controller: _fullNameController,
           label: 'Full name',
@@ -235,23 +272,117 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
         ),
         const SizedBox(height: 16),
       ],
+      const _FieldLabel('Phone number'),
       _TextField(
         controller: _phoneController,
         label: 'Phone number',
         icon: Icons.phone_outlined,
-        keyboardType: TextInputType.phone,
+        keyboardType: TextInputType.number,
+        // Fixed country code + exactly 9 national digits.
+        prefixText: '$_kCountryCode ',
+        hintText: '61 234 5678',
+        inputFormatters: [
+          FilteringTextInputFormatter.digitsOnly,
+          LengthLimitingTextInputFormatter(9),
+        ],
         validator: (v) {
-          final value = v?.trim() ?? '';
+          final value = (v ?? '').replaceAll(RegExp(r'[^0-9]'), '');
           if (value.isEmpty) return 'Enter your phone number';
-          if (value.replaceAll(RegExp(r'[^0-9]'), '').length < 6) {
-            return 'Enter a valid phone number';
-          }
+          if (value.length != 9) return 'Enter the 9 digits after $_kCountryCode';
           return null;
         },
       ),
       const SizedBox(height: 16),
+      const _FieldLabel('Password'),
       _passwordField(isNew: _isSignUp),
+      if (_isSignUp) ...[
+        const SizedBox(height: 8),
+        _privacyConsent(),
+      ],
     ];
+  }
+
+  /// The required privacy-policy consent row shown on sign-up: a checkbox plus a
+  /// tappable "Privacy Policy" link that opens the policy in a dialog.
+  Widget _privacyConsent() {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Checkbox(
+          value: _agreedToPrivacy,
+          onChanged: (v) => setState(() => _agreedToPrivacy = v ?? false),
+        ),
+        Expanded(
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text('I agree to the ', style: theme.textTheme.bodyMedium),
+              GestureDetector(
+                onTap: _showPrivacyDialog,
+                child: Text(
+                  'Privacy Policy',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w700,
+                    decoration: TextDecoration.underline,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _showPrivacyDialog() {
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text('Privacy Policy',
+                        style: Theme.of(ctx).textTheme.titleLarge),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: const PrivacyPolicyContent(),
+              ),
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () {
+                    setState(() => _agreedToPrivacy = true);
+                    Navigator.of(ctx).pop();
+                  },
+                  child: const Text('I agree'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _passwordField({required bool isNew}) {
@@ -280,6 +411,30 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
   }
 }
 
+/// A small bold label rendered above a form field.
+class _FieldLabel extends StatelessWidget {
+  const _FieldLabel(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6, left: 2),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(
+          text,
+          style: theme.textTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w600,
+            color: theme.colorScheme.onSurface,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// A themed text field used throughout the auth form.
 class _TextField extends StatelessWidget {
   const _TextField({
@@ -290,6 +445,9 @@ class _TextField extends StatelessWidget {
     this.keyboardType,
     this.obscureText = false,
     this.suffixIcon,
+    this.prefixText,
+    this.hintText,
+    this.inputFormatters,
     this.textCapitalization = TextCapitalization.none,
     this.textInputAction = TextInputAction.next,
     this.onFieldSubmitted,
@@ -302,6 +460,9 @@ class _TextField extends StatelessWidget {
   final TextInputType? keyboardType;
   final bool obscureText;
   final Widget? suffixIcon;
+  final String? prefixText;
+  final String? hintText;
+  final List<TextInputFormatter>? inputFormatters;
   final TextCapitalization textCapitalization;
   final TextInputAction textInputAction;
   final void Function(String)? onFieldSubmitted;
@@ -316,10 +477,13 @@ class _TextField extends StatelessWidget {
       textCapitalization: textCapitalization,
       textInputAction: textInputAction,
       onFieldSubmitted: onFieldSubmitted,
+      inputFormatters: inputFormatters,
       autofillHints: null,
       decoration: InputDecoration(
         labelText: label,
+        hintText: hintText,
         prefixIcon: Icon(icon),
+        prefixText: prefixText,
         suffixIcon: suffixIcon,
         border: const OutlineInputBorder(),
       ),
