@@ -33,9 +33,9 @@ export function AdminLayout() {
       <div className="admin-shell">
         <aside className="sidebar">
           <div className="sidebar-brand">
-            <Logo size={34} />
+            <Logo size={42} />
             <div className="sidebar-brand-text">
-              <span className="brand-name">Xawil</span>
+              <span className="brand-name">e-Xawil</span>
               <span className="brand-sub">Admin console</span>
             </div>
           </div>

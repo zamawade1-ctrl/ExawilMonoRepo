@@ -18,7 +18,7 @@ export function Logo({
       height={size}
       viewBox="0 0 1024 1024"
       role="img"
-      aria-label="Xawil"
+      aria-label="e-Xawil"
     >
       {!isWhite && (
         <defs>

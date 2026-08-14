@@ -233,7 +233,7 @@
   margin-bottom: 40px;
 }
 .signin-brand-name {
-  font-size: 2rem;
+  font-size: 2.4rem;
   font-weight: 800;
   letter-spacing: -0.02em;
 }
@@ -313,7 +313,8 @@
 .admin-shell {
   display: grid;
   grid-template-columns: 264px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: var(--app-bg);
 }
 .sidebar {
@@ -322,9 +323,10 @@
   padding: 22px 16px;
   background: var(--surface);
   border-right: 1px solid var(--outline-variant);
-  position: sticky;
-  top: 0;
   height: 100vh;
+  /* The sidebar itself never scrolls — the sign-out menu overlays on top of it
+     (absolute), and the routed content is the only scroll container. */
+  overflow: visible;
 }
 .sidebar-brand {
   display: flex;
@@ -405,7 +407,9 @@
   color: var(--muted);
   font-size: 1.1rem;
 }
-.menu-up {
+/* Higher specificity than `.menu` (defined later in this file) so the upward
+   variant's `top: auto` / `bottom` actually win the cascade. */
+.menu.menu-up {
   bottom: calc(100% + 6px);
   top: auto;
   left: 0;
@@ -455,9 +459,16 @@
 }
 
 .content {
-  padding: 32px 40px 60px;
-  max-width: 1320px;
+  /* A touch more right padding so the datatable/cards don't sit flush against
+     the screen edge — a small breathing gutter on the right. */
+  padding: 32px 112px 60px 40px;
+  /* Wide cap so the datatable uses the horizontal space on large desktops
+     instead of leaving a big empty gutter on the right. */
+  max-width: 1680px;
   width: 100%;
+  /* Only the main content scrolls; the sidebar stays fixed to the viewport. */
+  height: 100vh;
+  overflow-y: auto;
 }
 
 /* ---- Danger button ------------------------------------------------------- */
@@ -579,6 +590,12 @@
   border-radius: var(--radius-lg);
   overflow: hidden;
 }
+/* Horizontal scroll so the full table stays usable on narrow screens instead of
+   being clipped by the card's rounded overflow or crushed. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .datatable {
   width: 100%;
   border-collapse: collapse;
@@ -645,9 +662,21 @@
   text-overflow: ellipsis;
 }
 .cell-remaining {
-  margin-left: 8px;
   font-size: 0.78rem;
   color: var(--muted);
+}
+/* Plan column: badge + "time left" on one row, a thin progress bar beneath. */
+.cell-plan {
+  min-width: 168px;
+}
+.cell-plan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cell-plan-bar {
+  margin-top: 7px;
+  max-width: 220px;
 }
 .table-empty {
   text-align: center;
@@ -1322,6 +1351,7 @@
 }
 
 /* ---- Responsive ---------------------------------------------------------- */
+/* ---- Tablet: stack the master-detail / dashboard columns ----------------- */
 @media (max-width: 1080px) {
   .dashboard-layout,
   .users-layout {
@@ -1331,7 +1361,37 @@
   .detail-panel {
     position: static;
   }
+  .content {
+    padding: 28px 28px 56px;
+  }
 }
+
+/* ---- Small tablet / large phone ------------------------------------------ */
+@media (max-width: 720px) {
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .page-header-buttons {
+    flex-wrap: wrap;
+  }
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .search {
+    min-width: 0;
+  }
+  .segmented {
+    justify-content: space-between;
+  }
+  /* Below this width the 6-column table scrolls horizontally in its card. */
+  .datatable {
+    min-width: 560px;
+  }
+}
+
+/* ---- Phone --------------------------------------------------------------- */
 @media (max-width: 640px) {
   .datatable {
     font-size: 0.82rem;
@@ -1340,6 +1400,20 @@
   .th-sort {
     padding-left: 10px;
     padding-right: 10px;
+  }
+  .page-title {
+    font-size: 1.45rem;
+  }
+  .signin-form-panel {
+    padding: 28px 20px;
+  }
+  .pagination {
+    flex-direction: column;
+    gap: 10px;
+    align-items: stretch;
+  }
+  .pagination-controls {
+    justify-content: space-between;
   }
 }
 
@@ -1352,10 +1426,13 @@
   }
   .admin-shell {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
   }
   .sidebar {
     position: static;
     height: auto;
+    overflow: visible;
     flex-direction: row;
     align-items: center;
     flex-wrap: wrap;
@@ -1372,7 +1449,33 @@
     flex-direction: row;
     align-items: center;
   }
+  /* The bar is now at the top of the page, so the account menu must drop
+     downward instead of upward (which would render off-screen). */
+  .menu.menu-up {
+    top: calc(100% + 6px);
+    bottom: auto;
+    left: auto;
+    right: 0;
+  }
   .content {
     padding: 24px 20px 48px;
+    height: auto;
+    overflow: visible;
+  }
+}
+
+/* On phones, keep the top bar compact: icon-only account button, no brand sub. */
+@media (max-width: 560px) {
+  .brand-sub {
+    display: none;
+  }
+  .sidebar-user-text {
+    display: none;
+  }
+  .sidebar-user-caret {
+    display: none;
+  }
+  .sidebar-user-btn {
+    padding: 6px;
   }
 }

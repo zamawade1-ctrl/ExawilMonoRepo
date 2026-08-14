@@ -58,12 +58,12 @@ export function SignInPage() {
       <section className="signin-brand">
         <div className="signin-brand-inner">
           <div className="signin-brand-mark">
-            <Logo size={72} variant="white" />
-            <span className="signin-brand-name">Xawil</span>
+            <Logo size={96} variant="white" />
+            <span className="signin-brand-name">e-Xawil</span>
           </div>
           <h1 className="signin-brand-title">Admin console</h1>
           <p className="signin-brand-copy">
-            Manage customers, plans and activation codes for the Xawil
+            Manage customers, plans and activation codes for the e-Xawil
             auto-forwarding service — all in one place.
           </p>
           <ul className="signin-brand-list">
