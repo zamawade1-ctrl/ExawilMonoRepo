@@ -22,6 +22,21 @@ export const signInSchema = z.object({
 
 export type SignInInput = z.infer<typeof signInSchema>;
 
+// ---- App update / release (mirrors AppUpdateDto) ---------------------------
+// Powers the PUBLIC download/update page. No auth — anyone with the URL can read it.
+
+export const appUpdateSchema = z.object({
+  platform: z.string().default('android'),
+  versionName: z.string().default(''),
+  versionCode: z.number().default(0),
+  apkUrl: z.string().default(''),
+  releaseNotes: z.string().nullish(),
+  mandatory: z.boolean().default(true),
+  releasedAtUtc: z.string().nullish(),
+});
+
+export type AppUpdate = z.infer<typeof appUpdateSchema>;
+
 // ---- Plan snapshot (mirrors PlanStatusDto) ---------------------------------
 
 export const planStatusSchema = z.object({

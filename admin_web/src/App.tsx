@@ -9,6 +9,7 @@ import { useThemeStore } from './store/theme';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AdminLayout } from './components/AdminLayout';
 import { SignInPage } from './pages/SignInPage';
+import { DownloadPage } from './pages/DownloadPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { UsersPage } from './pages/UsersPage';
 import { BillingPage } from './pages/BillingPage';
@@ -16,6 +17,10 @@ import { GenerateCodePage } from './pages/GenerateCodePage';
 
 const router = createBrowserRouter([
   { path: '/sign-in', element: <SignInPage /> },
+  // PUBLIC APK download / update page — no auth, deliberately outside ProtectedRoute
+  // so anyone with the link can reach it. Both /download and /app resolve to it.
+  { path: '/download', element: <DownloadPage /> },
+  { path: '/app', element: <DownloadPage /> },
   {
     element: <ProtectedRoute />,
     children: [
