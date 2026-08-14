@@ -66,11 +66,7 @@ export function SignInPage() {
             Manage customers, plans and activation codes for the e-Xawil
             auto-forwarding service — all in one place.
           </p>
-          <ul className="signin-brand-list">
-            <li>Live view of every account and its plan</li>
-            <li>Generate phone-bound activation codes</li>
-            <li>Reset devices &amp; passwords, expire plans</li>
-          </ul>
+   
         </div>
         <p className="signin-brand-foot">Authorized administrators only.</p>
       </section>
