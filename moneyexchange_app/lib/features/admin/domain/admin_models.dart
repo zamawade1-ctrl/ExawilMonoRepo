@@ -14,6 +14,9 @@ class AdminUser {
     required this.lastModifiedAtUtc,
     required this.planKind,
     required this.plan,
+    this.latestCodeGeneratedAtUtc,
+    this.latestCodeRedeemed = false,
+    this.latestCodeRedeemedAtUtc,
   });
 
   final int userId;
@@ -28,7 +31,20 @@ class AdminUser {
   final String? planKind;
   final PlanSnapshot plan;
 
+  /// When the most recent activation code was generated for this account (null if none ever was).
+  final DateTime? latestCodeGeneratedAtUtc;
+
+  /// Whether that most recent code has been used. False + a non-null generated-at = "issued, not
+  /// used yet" — the plan hasn't started counting because redemption is what starts it.
+  final bool latestCodeRedeemed;
+
+  /// When the most recent code was redeemed (the instant the plan duration started), or null.
+  final DateTime? latestCodeRedeemedAtUtc;
+
   bool get isAdmin => role.toLowerCase() == 'admin';
+
+  static DateTime? _parseUtc(Object? v) =>
+      v == null ? null : DateTime.parse(v as String).toUtc();
 
   factory AdminUser.fromJson(Map<String, dynamic> json) => AdminUser(
     userId: json['userId'] as int,
@@ -44,6 +60,9 @@ class AdminUser {
         : DateTime.parse(json['lastModifiedAtUtc'] as String).toUtc(),
     planKind: json['planKind'] as String?,
     plan: PlanSnapshot.fromJson(json['plan'] as Map<String, dynamic>),
+    latestCodeGeneratedAtUtc: _parseUtc(json['latestCodeGeneratedAtUtc']),
+    latestCodeRedeemed: json['latestCodeRedeemed'] as bool? ?? false,
+    latestCodeRedeemedAtUtc: _parseUtc(json['latestCodeRedeemedAtUtc']),
   );
 }
 

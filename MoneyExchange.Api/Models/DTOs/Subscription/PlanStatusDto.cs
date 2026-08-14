@@ -49,4 +49,11 @@ public class SessionStatusDto
 
     /// <summary>The current plan snapshot, so the same poll also drives the expiry gate.</summary>
     public PlanStatusDto Plan { get; set; } = new();
+
+    /// <summary>
+    /// The activation code waiting for this account (admin-minted, phone-bound, unredeemed, unexpired),
+    /// or null when none is waiting. Delivered on the same real-time poll so it shows on the user's
+    /// activation page within a few seconds of the admin generating it, and disappears once redeemed.
+    /// </summary>
+    public PendingActivationCodeDto? PendingCode { get; set; }
 }

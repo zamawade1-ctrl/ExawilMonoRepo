@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 
+import '../domain/pending_activation_code.dart';
 import '../domain/plan_snapshot.dart';
 
 /// A subscription/activation failure carrying a user-facing message (the
@@ -30,15 +31,23 @@ class SubscriptionApi {
   /// The session's live validity + plan, for the fast session poll. [valid] is
   /// false once this [deviceId] no longer matches the account's bound device
   /// (e.g. after an admin device-reset), signalling the app to sign out.
-  Future<({bool valid, PlanSnapshot plan})> session(String? deviceId) async {
+  /// [pendingCode] carries any admin-minted activation code waiting for this
+  /// account (null when none), so the same poll surfaces it on the activation
+  /// page in real time.
+  Future<({bool valid, PlanSnapshot plan, PendingActivationCode? pendingCode})>
+      session(String? deviceId) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/api/subscription/session',
       queryParameters: deviceId == null ? null : {'deviceId': deviceId},
     );
     final data = response.data!['data'] as Map<String, dynamic>;
+    final pending = data['pendingCode'];
     return (
       valid: data['valid'] as bool? ?? true,
       plan: PlanSnapshot.fromJson(data['plan'] as Map<String, dynamic>),
+      pendingCode: pending is Map<String, dynamic>
+          ? PendingActivationCode.fromJson(pending)
+          : null,
     );
   }
 

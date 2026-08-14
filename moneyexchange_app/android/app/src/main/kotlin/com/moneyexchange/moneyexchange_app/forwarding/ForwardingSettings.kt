@@ -181,19 +181,39 @@ class ForwardingSettings(context: Context) {
         }
 
     /**
-     * Dedup guard for check-messages: the same Zaad exchange SMS is delivered more
-     * than once (an 898 copy and a 222 copy, and sometimes twice each), so we key
-     * off the message's "Tixraac" reference and forward each ref at most once.
-     * [markRefForwardedIfNew] atomically checks-and-marks so two near-simultaneous
-     * deliveries can't both pass. Keeps only the most recent [MAX_REFS] refs.
+     * Dedup guard for check-messages, keyed by a content SIGNATURE
+     * ([SmsMoneyParser.exchangeSignature]) within a time window. The same Zaad exchange
+     * is delivered more than once (an 898 copy and a 222 copy, sometimes twice each,
+     * occasionally minutes apart with a DIFFERENT "Tixraac" ref on the copy — the case
+     * that let duplicates through the old ref-only guard, attempting a second forward
+     * and double-counting the received total). The signature is identical across every
+     * copy of one exchange regardless of its ref, so this forwards each exchange once.
+     *
+     * Returns true (forward it) only if [signature] hasn't been seen within [windowMs];
+     * a match inside the window is a duplicate and returns false. Entries older than the
+     * window are pruned on each call, so an identical exchange repeated legitimately far
+     * apart in time is still forwarded. Keeps only the most recent [MAX_SIGS] entries.
+     *
+     * commit(), not apply(): the write must be durable BEFORE we go on to forward, so a
+     * duplicate SMS that arrives after the process is recycled (Doze/low-memory kill
+     * between the two deliveries) still sees this signature on disk and is skipped.
      */
     @Synchronized
-    fun markRefForwardedIfNew(ref: String): Boolean {
-        val existing = prefs.getString(KEY_FORWARDED_REFS, "").orEmpty()
-        val refs = existing.split(',').filter { it.isNotBlank() }
-        if (refs.contains(ref)) return false
-        val updated = (refs + ref).takeLast(MAX_REFS).joinToString(",")
-        prefs.edit().putString(KEY_FORWARDED_REFS, updated).apply()
+    fun markExchangeIfNew(signature: String, windowMs: Long): Boolean {
+        val now = System.currentTimeMillis()
+        val existing = prefs.getString(KEY_EXCHANGE_SIGS, "").orEmpty()
+        // Each entry is "signature<SIG_SEP>timestampMs"; drop any now outside the window.
+        val kept = existing.split('\n').filter { it.isNotBlank() }.mapNotNull { entry ->
+            val sep = entry.lastIndexOf(SIG_SEP)
+            if (sep <= 0) return@mapNotNull null
+            val sig = entry.substring(0, sep)
+            val ts = entry.substring(sep + SIG_SEP.length).toLongOrNull() ?: return@mapNotNull null
+            if (now - ts in 0..windowMs) sig to ts else null
+        }
+        if (kept.any { it.first == signature }) return false
+        val updated = (kept + (signature to now)).takeLast(MAX_SIGS)
+            .joinToString("\n") { "${it.first}$SIG_SEP${it.second}" }
+        prefs.edit().putString(KEY_EXCHANGE_SIGS, updated).commit()
         return true
     }
 
@@ -222,10 +242,17 @@ class ForwardingSettings(context: Context) {
         private const val KEY_PLAN_UNTIL = "plan_active_until_ms"
         private const val KEY_LAST_BALANCE = "last_leftover_balance"
         private const val KEY_LAST_BALANCE_AT = "last_leftover_balance_at"
-        private const val KEY_FORWARDED_REFS = "forwarded_refs"
+        private const val KEY_EXCHANGE_SIGS = "forwarded_exchange_sigs"
         private const val DEFAULT_INTERVAL = 1
 
-        /** How many recent exchange refs to remember for dedup. */
-        private const val MAX_REFS = 50
+        /** How many recent exchange signatures to remember for dedup. */
+        private const val MAX_SIGS = 50
+
+        /**
+         * In-record separator between a stored exchange signature and its timestamp.
+         * A control char that can't occur inside a signature (which is only dollars,
+         * shilling digits, and phone digits), so splitting is unambiguous.
+         */
+        private const val SIG_SEP = "\u0001"
     }
 }

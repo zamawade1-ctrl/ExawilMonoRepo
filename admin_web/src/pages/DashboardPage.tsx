@@ -16,7 +16,7 @@ const EXPIRING_WINDOW_MS = 7 * DAY_MS;
  * the customer figures, matching the mobile console.
  */
 export function DashboardPage() {
-  const { users, fetchedAt, loading, error, reload } = useUsers();
+  const { users, fetchedAt, loading, refreshing, error, reload } = useUsers();
   const navigate = useNavigate();
 
   const stats = useMemo(() => {
@@ -66,8 +66,12 @@ export function DashboardPage() {
         title="Dashboard"
         subtitle="Overview of accounts and plan health."
         action={
-          <button className="btn btn-ghost" onClick={() => reload()}>
-            Refresh
+          <button
+            className="btn btn-ghost"
+            onClick={() => reload()}
+            disabled={refreshing}
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
         }
       />

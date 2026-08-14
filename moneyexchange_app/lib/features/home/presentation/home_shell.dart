@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/app_info.dart';
@@ -94,8 +96,34 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     }
   }
 
-  /// Dials the support line from the center call button.
+  /// Calls the support line from the center call button. On Android we place the call **directly**
+  /// (a single tap dials immediately, no dial-button step) as soon as the CALL_PHONE runtime
+  /// permission is granted. If the user denies it we fall back to the system dialer with the number
+  /// pre-filled; if they've permanently denied it we point them to app settings, then still open the
+  /// dialer so the button is never a dead end.
   Future<void> _call() async {
+    // Ask for CALL_PHONE the first time; later taps get the cached grant back instantly.
+    final status = await Permission.phone.request();
+
+    if (status.isGranted) {
+      final placed = await FlutterPhoneDirectCaller.callNumber(_kCallNumber);
+      if (placed == true) return;
+      // Native placement failed for some reason → drop to the dialer below.
+    } else if (status.isPermanentlyDenied && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Allow the Phone permission to call with one tap.'),
+          action: SnackBarAction(label: 'Settings', onPressed: openAppSettings),
+        ),
+      );
+    }
+
+    // Fallback: open the dialer with the number pre-filled (the original behavior).
+    await _openDialer();
+  }
+
+  /// Opens the system dialer with the support number pre-filled (permission-free fallback).
+  Future<void> _openDialer() async {
     final uri = Uri(scheme: 'tel', path: _kCallNumber);
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri);

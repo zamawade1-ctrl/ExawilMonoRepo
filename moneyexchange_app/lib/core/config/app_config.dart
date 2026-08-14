@@ -12,12 +12,15 @@
 class AppConfig {
   const AppConfig._();
 
-  /// Base URL of MoneyExchange.Api. Defaults to the Android emulator's alias
-  /// for the host machine's localhost; override for a physical device, iOS
-  /// simulator, or a deployed backend.
+  /// Base URL of MoneyExchange.Api. Defaults to the LIVE production backend so
+  /// a release build is always pointed at the hosted API even if no
+  /// `--dart-define=API_BASE_URL` is passed — there is no dev/localhost fallback
+  /// baked into a shipped app. For local development, override it explicitly,
+  /// e.g. `--dart-define=API_BASE_URL=http://10.0.2.2:5219` (Android emulator)
+  /// or `http://localhost:5219` (iOS simulator / adb reverse).
   static const String apiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:5219',
+    defaultValue: 'https://moneyexchaneautoussd.onrender.com',
   );
 
   /// The Web OAuth client ID from Google Cloud Console. This - not the

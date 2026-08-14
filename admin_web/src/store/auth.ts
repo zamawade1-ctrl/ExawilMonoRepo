@@ -91,6 +91,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       saveSession(user);
       set({ user, token: user.accessToken });
+
+      // Warm the user feed while the router is still navigating to the dashboard, so the first
+      // page paints with data already in hand instead of blocking on its own fetch. Lazy import
+      // avoids an auth ↔ users module cycle; the store de-dupes this against the page's own load.
+      void import('./users').then((m) => m.useUsersStore.getState().ensure(true));
     } finally {
       set({ loading: false });
     }
@@ -99,6 +104,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signOut: () => {
     clearSession();
     set({ user: null, token: null });
+    // Drop the cached feed so the next admin to sign in never sees the previous admin's rows.
+    void import('./users').then((m) => m.useUsersStore.getState().clear());
   },
 
   isAdmin: () => get().user?.role.toLowerCase() === 'admin',

@@ -66,3 +66,27 @@ public class ActivationCodeDto
     public string? AssignedToPhone { get; set; }
     public DateTime? ExpiresAtUtc { get; set; }
 }
+
+/// <summary>
+/// The activation code an admin most recently minted for one specific account (phone-bound, still
+/// unredeemed and unexpired), surfaced on that user's session poll so it appears on their activation
+/// page in real time — no WhatsApp hand-off, no page refresh. Null when nothing is waiting (never
+/// minted, already redeemed, or expired), so a used code stops showing until the admin mints a new one.
+/// </summary>
+public class PendingActivationCodeDto
+{
+    /// <summary>The redeemable code in human (dashed) form; redemption also tolerates the raw form.</summary>
+    public string Code { get; set; } = string.Empty;
+
+    /// <summary>Human plan-kind label the code grants ("1 month", "Forever", ...), for display.</summary>
+    public string? PlanKind { get; set; }
+
+    /// <summary>Minutes of Pro access the code grants when redeemed.</summary>
+    public int DurationMinutes { get; set; }
+
+    /// <summary>When the code stops being redeemable, or null for no expiry.</summary>
+    public DateTime? ExpiresAtUtc { get; set; }
+
+    /// <summary>When the admin minted it, so the app can highlight a just-arrived code.</summary>
+    public DateTime CreatedAtUtc { get; set; }
+}

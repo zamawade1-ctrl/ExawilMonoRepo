@@ -126,11 +126,13 @@ class ForwardingForegroundService : Service() {
             ACTION_FORWARD_AMOUNT -> {
                 // Check-messages: a Zaad 898 exchange SMS arrived; [SmsReceiver] already
                 // read the exchanged dollar amount. Forward exactly that amount to the
-                // destination — NO *800# balance check — deduped by the SMS's ref so a
-                // double-delivered exchange can't double-send.
+                // destination — NO *800# balance check — deduped within a time window by
+                // the exchange's content signature so a re-delivered exchange (even with a
+                // different ref) can't double-send.
                 val amount = intent.getDoubleExtra(EXTRA_AMOUNT_USD, 0.0)
+                val signature = intent.getStringExtra(EXTRA_SIGNATURE)
                 val ref = intent.getStringExtra(EXTRA_REF)
-                requestDirectForward(amount, ref)
+                requestDirectForward(amount, signature, ref)
             }
 
             ACTION_TICK -> {
@@ -217,23 +219,27 @@ class ForwardingForegroundService : Service() {
 
     /**
      * Check-messages direct forward: forward the exact [amountUsd] read from a Zaad
-     * 898 exchange SMS — NO *800# balance check. Deduped by [ref]: the same exchange
-     * is double-delivered, so we forward each ref at most once
-     * ([ForwardingSettings.markRefForwardedIfNew], atomic under [sweepLock]). Runs
-     * only if idle — an in-flight forward defers nothing, since the ref is only
-     * consumed once the forward actually starts — then stands the service down.
+     * 898 exchange SMS — NO *800# balance check. Deduped by [signature] within a time
+     * window: the same exchange is re-delivered (sometimes minutes apart, with a
+     * different ref), so we forward each distinct exchange content at most once
+     * ([ForwardingSettings.markExchangeIfNew], atomic under [sweepLock]). [ref] only
+     * keys the ledger entries. Runs only if idle — an in-flight forward defers nothing,
+     * since the signature is only consumed once the forward actually starts — then
+     * stands the service down.
      */
-    private fun requestDirectForward(amountUsd: Double, ref: String?) {
+    private fun requestDirectForward(amountUsd: Double, signature: String?, ref: String?) {
         synchronized(sweepLock) {
             // Dedup FIRST, inside the lock, so two near-simultaneous deliveries of the
-            // same ref can't both pass. Only consume the ref if we can start now.
-            if (ref != null && !ForwardingSettings(this).markRefForwardedIfNew(ref)) {
-                Log.i(TAG, "Exchange ref=$ref already forwarded; skipping duplicate.")
+            // same exchange can't both pass. Only consume the signature if we can start now.
+            if (signature != null &&
+                !ForwardingSettings(this).markExchangeIfNew(signature, EXCHANGE_DEDUP_WINDOW_MS)
+            ) {
+                Log.i(TAG, "Exchange sig=$signature already forwarded within window; skipping duplicate.")
                 stopIfNotAutoForwardPoller()
                 return
             }
             if (sweepRunning) {
-                Log.i(TAG, "Forward already running; skipping this 898-triggered forward (ref=$ref).")
+                Log.i(TAG, "Forward already running; skipping this 898-triggered forward (sig=$signature).")
                 stopIfNotAutoForwardPoller()
                 return
             }
@@ -246,7 +252,7 @@ class ForwardingForegroundService : Service() {
         }
         h.post {
             try {
-                withWakeLock { runDirectForward(amountUsd) }
+                withWakeLock { runDirectForward(amountUsd, ref) }
             } catch (e: Throwable) {
                 Log.e(TAG, "898 exchange forward failed", e)
             } finally {
@@ -262,7 +268,7 @@ class ForwardingForegroundService : Service() {
      * mobile, or the `*800#` deposit walk for bank), with NO balance-check `*800#`.
      * Records the RECEIVED + FORWARDED events for the dashboard.
      */
-    private fun runDirectForward(amountUsd: Double) {
+    private fun runDirectForward(amountUsd: Double, ref: String?) {
         val settings = ForwardingSettings(this)
         val primary = settings.pin
         if (!settings.isReady() || primary == null) {
@@ -273,7 +279,18 @@ class ForwardingForegroundService : Service() {
         val amount = computeForwardAmount(amountUsd) ?: return
 
         // The exchanged dollars are money in — log RECEIVED, paired with FORWARDED below.
-        TransactionStore.record(this, TransactionStore.TYPE_RECEIVED, amount.toDouble(), provider = "Zaad")
+        // Key the RECEIVED by the exchange ref (recv:<ref>) so a double-delivered 898 can
+        // never double-count the received total, even if the service-level ref dedup above
+        // was bypassed (e.g. the process was recycled between the two deliveries). The
+        // FORWARDED below is keyed fwd:<ref> — a DIFFERENT key so it isn't swallowed by the
+        // received entry, while its own duplicate (the failed retry) is.
+        TransactionStore.record(
+            this,
+            TransactionStore.TYPE_RECEIVED,
+            amount.toDouble(),
+            provider = "Zaad",
+            dedupeKey = ref?.let { "recv:$it" },
+        )
 
         if (settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT) {
             val bankPin = settings.bankPin
@@ -283,7 +300,7 @@ class ForwardingForegroundService : Service() {
             }
             Log.i(TAG, "898 exchange \$$amountUsd → bank-forwarding \$$amount (whole dollars); no *800#.")
             val ok = performBankSend(primary, bankPin, amount, subscriptionId)
-            recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok)
+            recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok, dedupeKey = ref?.let { "fwd:$it" })
         } else {
             val destination = settings.destination
             val secondary = settings.secondaryPin
@@ -294,7 +311,7 @@ class ForwardingForegroundService : Service() {
             Log.i(TAG, "898 exchange \$$amountUsd → forwarding \$$amount (whole dollars) to $destination; no *800#.")
             UssdSession.beginDirectSend(primary, secondary, destination)
             val ok = performSend(destination, amount, secondary, subscriptionId)
-            recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok)
+            recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok, dedupeKey = ref?.let { "fwd:$it" })
         }
     }
 
@@ -707,7 +724,13 @@ class ForwardingForegroundService : Service() {
      * PIN / bank confirm was actually driven — so a failed/timed-out cycle is
      * recorded as such rather than silently dropped.
      */
-    private fun recordForwarded(amount: String, destination: String?, method: ForwardingMethod, ok: Boolean) {
+    private fun recordForwarded(
+        amount: String,
+        destination: String?,
+        method: ForwardingMethod,
+        ok: Boolean,
+        dedupeKey: String? = null,
+    ) {
         val dest = when {
             !destination.isNullOrBlank() -> destination
             method == ForwardingMethod.BANK_ACCOUNT -> "Bank account"
@@ -721,6 +744,9 @@ class ForwardingForegroundService : Service() {
             method = method.ordinal,
             status = if (ok) TransactionStore.STATUS_SUCCESS else TransactionStore.STATUS_FAILED,
             provider = "Zaad",
+            // Only the 898 direct-forward path passes a key (fwd:<ref>) — a balance-sweep
+            // forward has no transaction ref and each sweep is a distinct send, so it stays null.
+            dedupeKey = dedupeKey,
         )
     }
 
@@ -916,8 +942,19 @@ class ForwardingForegroundService : Service() {
         /** Exchanged USD amount (from the 898 SMS) to forward, on [ACTION_FORWARD_AMOUNT]. */
         private const val EXTRA_AMOUNT_USD = "amount_usd"
 
-        /** The SMS "Tixraac" ref, for dedup, on [ACTION_FORWARD_AMOUNT]. */
+        /** The SMS "Tixraac" ref, used to key the ledger entries, on [ACTION_FORWARD_AMOUNT]. */
         private const val EXTRA_REF = "exchange_ref"
+
+        /** The exchange content signature, used for windowed dedup, on [ACTION_FORWARD_AMOUNT]. */
+        private const val EXTRA_SIGNATURE = "exchange_signature"
+
+        /**
+         * How long two deliveries of the same exchange (same content signature) are
+         * treated as duplicates. Zaad's re-delivered copies have been seen up to a few
+         * minutes apart; 10 minutes covers that comfortably while still letting a genuine
+         * repeat of the identical exchange further out be forwarded.
+         */
+        private const val EXCHANGE_DEDUP_WINDOW_MS = 10 * 60_000L
 
         /**
          * On [ACTION_SWEEP_NOW]: force a fresh `*800#` balance read instead of the
@@ -1007,13 +1044,21 @@ class ForwardingForegroundService : Service() {
 
         /**
          * Check-messages path: forward exactly [amountUsd] (the dollars a Zaad 898
-         * exchange SMS reported), deduped by [ref], with no *800# balance check.
-         * Started from [SmsReceiver.handleMessageCheck].
+         * exchange SMS reported), with no *800# balance check. Deduped within a time
+         * window by [signature] (the exchange's content signature, stable across a
+         * re-delivery even when its ref differs); [ref] keys the ledger's RECEIVED /
+         * FORWARDED entries. Started from [SmsReceiver.handleMessageCheck].
          */
-        fun forwardAmountFromMessage(context: Context, amountUsd: Double, ref: String?) {
+        fun forwardAmountFromMessage(
+            context: Context,
+            amountUsd: Double,
+            signature: String,
+            ref: String?,
+        ) {
             val intent = Intent(context, ForwardingForegroundService::class.java)
                 .setAction(ACTION_FORWARD_AMOUNT)
                 .putExtra(EXTRA_AMOUNT_USD, amountUsd)
+                .putExtra(EXTRA_SIGNATURE, signature)
                 .putExtra(EXTRA_REF, ref)
             startService(context, intent)
         }

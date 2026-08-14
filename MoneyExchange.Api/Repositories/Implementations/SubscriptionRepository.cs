@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using MoneyExchange.Api.Data;
 using MoneyExchange.Api.Models.DTOs.Subscription;
+using MoneyExchange.Api.Models.Entities;
 using MoneyExchange.Api.Models.Responses;
 using MoneyExchange.Api.Repositories.Interfaces;
 using MoneyExchange.Api.Services;
@@ -57,7 +58,42 @@ public class SubscriptionRepository : ISubscriptionRepository
             Valid = deviceValid,
             Reason = deviceValid ? null : "device-reset",
             Plan = _planCalculator.Snapshot(user),
+            // Deliver any admin-minted code waiting for this account on the same poll, so it lands on
+            // the user's activation page in near-real-time and clears itself once redeemed.
+            PendingCode = await FindPendingCodeAsync(user, DateTime.UtcNow),
         });
+    }
+
+    /// <summary>
+    /// The newest activation code minted for this exact account (bound to the user's phone) that is
+    /// still redeemable — unredeemed and unexpired — or null when none is waiting. Because the query
+    /// filters out redeemed codes, a code the user already consumed stops surfacing until the admin
+    /// mints a fresh one; because it's phone-bound, it only ever reaches the one account it's for.
+    /// </summary>
+    private async Task<PendingActivationCodeDto?> FindPendingCodeAsync(User user, DateTime now)
+    {
+        var phone = PhoneNumberUtil.Normalize(user.PhoneNumber);
+        if (phone.Length == 0) return null;
+
+        var code = await _context.ActivationCodes
+            .Where(c => c.AssignedToPhone == phone
+                && !c.IsRedeemed
+                && (c.ExpiresAtUtc == null || c.ExpiresAtUtc > now))
+            .OrderByDescending(c => c.CreatedAtUtc)
+            .ThenByDescending(c => c.Id)
+            .FirstOrDefaultAsync();
+        if (code is null) return null;
+
+        // Fall back to days for codes minted before DurationMinutes existed (mirrors RedeemAsync).
+        var grantMinutes = code.DurationMinutes > 0 ? code.DurationMinutes : code.DurationDays * 24 * 60;
+        return new PendingActivationCodeDto
+        {
+            Code = ActivationCodeFormat.Prettify(code.Code),
+            PlanKind = PlanKinds.Label(grantMinutes),
+            DurationMinutes = grantMinutes,
+            ExpiresAtUtc = code.ExpiresAtUtc,
+            CreatedAtUtc = code.CreatedAtUtc,
+        };
     }
 
     public async Task<ServiceResponse<PlanStatusDto>> RedeemAsync(int userId, RedeemActivationDto dto)

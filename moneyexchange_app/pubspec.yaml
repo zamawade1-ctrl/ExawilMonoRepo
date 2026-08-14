@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.10.8
@@ -48,6 +48,11 @@ dependencies:
   fl_chart: ^1.2.0
   device_info_plus: ^11.2.0
   crypto: ^3.0.6
+  flutter_phone_direct_caller: ^2.2.1
+  # Pinned to 11.x: permission_handler_android 14 (pulled by 12+/13) ships a build.gradle.kts that
+  # fails to compile against this project's toolchain (AGP 8.11 / Kotlin 2.2 / Gradle 8.14). The
+  # CALL_PHONE runtime request (Permission.phone) + openAppSettings() we use are identical on 11.x.
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:

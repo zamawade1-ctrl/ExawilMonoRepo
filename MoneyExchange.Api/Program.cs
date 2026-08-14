@@ -26,8 +26,20 @@ if (!string.IsNullOrWhiteSpace(listenPort))
 }
 
 // --- Persistence: EF Core + Postgres (Supabase) ---
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+// Keep one warm connection in the pool with TCP keepalive so the first request after an idle
+// spell doesn't pay the Supabase pooler's cold reconnect (which shows up as a multi-second login).
+// The base connection string stays in user-secrets/env; we only layer pooling knobs on top here.
+var baseConnection = builder.Configuration.GetConnectionString("DefaultConnection");
+var dbConnection = baseConnection;
+if (!string.IsNullOrWhiteSpace(baseConnection))
+{
+    dbConnection = new Npgsql.NpgsqlConnectionStringBuilder(baseConnection)
+    {
+        MinPoolSize = 1,   // hold a physical connection open so it's ready on the next request
+        KeepAlive = 30,    // send TCP keepalives so the pooler doesn't drop the idle connection
+    }.ConnectionString;
+}
+builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(dbConnection));
 
 // --- Repository registration (repository pattern) ---
 builder.Services.AddScoped<IExchangeTransactionRepository, ExchangeTransactionRepository>();

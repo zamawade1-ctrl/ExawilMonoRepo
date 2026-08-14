@@ -90,7 +90,7 @@ public class AdminRepository : IAdminRepository
 
                 results.Add(new ActivationCodeDto
                 {
-                    Code = Prettify(raw),   // dashed form for readability; redeem tolerates either
+                    Code = ActivationCodeFormat.Prettify(raw),   // dashed form for readability; redeem tolerates either
                     DurationMinutes = durationMinutes,
                     DurationDays = durationMinutes / (24 * 60),
                     PlanKind = planKind,
@@ -257,20 +257,43 @@ public class AdminRepository : IAdminRepository
                 .OrderByDescending(u => u.LastModifiedAtUtc ?? u.CreatedAt)
                 .ToListAsync();
 
-            var rows = users.Select(u => new AdminUserDto
+            // Batch-load the newest activation code per phone (one query, grouped in memory) so the
+            // table can show whether each customer has used the code they were issued — and when it was
+            // issued — without an N+1 lookup. Codes are stored against the normalized phone.
+            var phones = users
+                .Select(u => PhoneNumberUtil.Normalize(u.PhoneNumber))
+                .Where(p => p.Length > 0)
+                .Distinct()
+                .ToList();
+            var latestCodeByPhone = (await _context.ActivationCodes
+                    .Where(c => c.AssignedToPhone != null && phones.Contains(c.AssignedToPhone))
+                    .ToListAsync())
+                .GroupBy(c => c.AssignedToPhone!)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderByDescending(c => c.CreatedAtUtc).ThenByDescending(c => c.Id).First());
+
+            var rows = users.Select(u =>
             {
-                UserId = u.Id,
-                FullName = u.FullName,
-                Phone = u.PhoneNumber,
-                Role = u.Role.ToString(),
-                DeviceLabel = u.DeviceLabel,
-                HasDevice = !string.IsNullOrEmpty(u.DeviceId),
-                CreatedAtUtc = u.CreatedAt,
-                LastLoginAtUtc = u.LastLoginAtUtc,
-                LastModifiedAtUtc = u.LastModifiedAtUtc ?? u.CreatedAt,
-                PlanKind = PlanKinds.Label(u.PlanDurationMinutes),
-                PlanStartedAtUtc = u.PlanStartedAtUtc,
-                Plan = _planCalculator.Snapshot(u)
+                latestCodeByPhone.TryGetValue(PhoneNumberUtil.Normalize(u.PhoneNumber), out var code);
+                return new AdminUserDto
+                {
+                    UserId = u.Id,
+                    FullName = u.FullName,
+                    Phone = u.PhoneNumber,
+                    Role = u.Role.ToString(),
+                    DeviceLabel = u.DeviceLabel,
+                    HasDevice = !string.IsNullOrEmpty(u.DeviceId),
+                    CreatedAtUtc = u.CreatedAt,
+                    LastLoginAtUtc = u.LastLoginAtUtc,
+                    LastModifiedAtUtc = u.LastModifiedAtUtc ?? u.CreatedAt,
+                    PlanKind = PlanKinds.Label(u.PlanDurationMinutes),
+                    PlanStartedAtUtc = u.PlanStartedAtUtc,
+                    Plan = _planCalculator.Snapshot(u),
+                    LatestCodeGeneratedAtUtc = code?.CreatedAtUtc,
+                    LatestCodeRedeemed = code?.IsRedeemed ?? false,
+                    LatestCodeRedeemedAtUtc = code?.RedeemedAtUtc,
+                };
             }).ToList();
 
             return ServiceResponse<List<AdminUserDto>>.Ok(rows);
@@ -289,15 +312,5 @@ public class AdminRepository : IAdminRepository
         for (var i = 0; i < RandomLength; i++)
             sb.Append(CodeAlphabet[RandomNumberGenerator.GetInt32(CodeAlphabet.Length)]);
         return sb.ToString();
-    }
-
-    /// <summary>Formats a raw code for humans: MX-XXXX-XXXX-XXXX (prefix, then groups of four).</summary>
-    private static string Prettify(string raw)
-    {
-        var body = raw[CodePrefix.Length..];
-        var groups = new List<string> { CodePrefix };
-        for (var i = 0; i < body.Length; i += 4)
-            groups.Add(body.Substring(i, Math.Min(4, body.Length - i)));
-        return string.Join('-', groups);
     }
 }

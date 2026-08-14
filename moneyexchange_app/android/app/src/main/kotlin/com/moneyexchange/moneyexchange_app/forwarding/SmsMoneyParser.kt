@@ -85,6 +85,12 @@ object SmsMoneyParser {
     private val EXCHANGE_REF = Regex("""tixraac:?\s*([0-9]+)""", RegexOption.IGNORE_CASE)
 
     /**
+     * The counterparty phone in parentheses, e.g. "(252634480003)" or "(0634779796)".
+     * Part of the exchange's stable economic content used by [exchangeSignature].
+     */
+    private val COUNTERPARTY_PHONE = Regex("""\(\s*(\+?[0-9][0-9 ]{5,}[0-9])\s*\)""")
+
+    /**
      * SAFETY guard for the check-messages (898) flow: true when the SMS is one
      * we must never forward against — an outgoing "you sent…" confirmation, or
      * an airtime/exchange notification. The 898 balance flow reads a balance out
@@ -120,6 +126,49 @@ object SmsMoneyParser {
     /** The transaction reference ("Tixraac: <id>") used to dedup double-delivered SMS. */
     fun exchangeRef(body: String): String? =
         EXCHANGE_REF.find(body)?.groupValues?.get(1)
+
+    /**
+     * A stable, NEVER-NULL dedup key for an exchange SMS: the "Tixraac" transaction
+     * ref when present, else a hash of the whitespace-normalized body. The same
+     * exchange, double-delivered by the network, is byte-identical (same ref, same
+     * body) so it always yields the same key — while two genuinely different exchanges
+     * (even of the same dollar amount) carry different refs/bodies and so keep distinct
+     * keys. Because it's never null, dedup can never be silently skipped for a message
+     * whose ref failed to parse — the gap that let some duplicates through.
+     */
+    fun dedupKey(body: String): String =
+        exchangeRef(body) ?: "b:${body.trim().replace(Regex("\\s+"), " ").hashCode()}"
+
+    /**
+     * A TIME-WINDOW dedup signature for a Zaad 898 exchange, built from the message's
+     * ECONOMIC content — the exchanged dollars, the SLSH shilling figure, and the
+     * counterparty phone digits — deliberately EXCLUDING the "Tixraac" ref and any
+     * "Tar:" timestamp.
+     *
+     * Why this exists on top of [dedupKey]/[exchangeRef]: Zaad sometimes re-delivers
+     * the *same* exchange a few minutes apart with a DIFFERENT ref stamped on the copy.
+     * Ref-only dedup can't see those as the same message, so a second forward was
+     * attempted (one of the pair failing) and the received total was double-counted.
+     * Every copy of one exchange shares this signature, so a windowed dedup on it
+     * (see [ForwardingSettings.markExchangeIfNew]) collapses them regardless of the ref.
+     *
+     * Safety: two GENUINELY distinct exchanges would have to match on dollars AND
+     * shilling AND counterparty phone within the dedup window to collide — practically
+     * impossible, and the window is short (minutes), so the same exchange repeated
+     * legitimately far apart in time is still forwarded. Falls back to the ref (then a
+     * body hash) when neither the shilling figure nor the counterparty phone parses, so
+     * it's never null for a message that is an exchange. Null only when it isn't one.
+     */
+    fun exchangeSignature(body: String): String? {
+        val usd = exchangedUsd(body) ?: return null
+        val shilling = SLSH_AMOUNT.find(body)?.groupValues?.get(1)?.replace(",", "")
+        val phone = COUNTERPARTY_PHONE.find(body)?.groupValues?.get(1)?.replace(Regex("[^0-9]"), "")
+        return if (shilling != null || phone != null) {
+            "u:$usd|s:${shilling ?: "?"}|p:${phone ?: "?"}"
+        } else {
+            "r:${dedupKey(body)}"
+        }
+    }
 
     /**
      * The FULL check-messages trigger decision: true only when [sender] is the Zaad

@@ -225,6 +225,74 @@ class SmsMoneyParserTest {
         assertFalse(SmsMoneyParser.isCheckMessageTrigger("898", sms))
     }
 
+    // Dedup key: the SAME exchange double-delivered (byte-identical) yields the SAME key
+    // (its Tixraac ref), so the second delivery is skipped and never double-counts received.
+    @Test
+    fun dedupKey_identicalReDelivery_sameKey_usesRef() {
+        val sms = "[-[-ADEEGA SARIFKA-]-] \n Tixraac: 14814754003, Waxaad  \$3 u sariftay " +
+            "SLSH30,000SUHAYB CABDIKARIIN AXMED GUDAAL(252634480003)."
+        assertEquals("14814754003", SmsMoneyParser.dedupKey(sms))
+        assertEquals(SmsMoneyParser.dedupKey(sms), SmsMoneyParser.dedupKey(sms))
+    }
+
+    // Two DIFFERENT exchanges of the same $ amount have different refs → different keys,
+    // so a genuine second $3 exchange is NOT wrongly deduped (money still forwarded).
+    @Test
+    fun dedupKey_differentTransactions_differentKeys() {
+        val a = "Tixraac: 14814754003, Waxaad  \$3 u sariftay SLSH30,000A(252634480003)."
+        val b = "Tixraac: 14814754999, Waxaad  \$3 u sariftay SLSH30,000B(252634480003)."
+        assertTrue(SmsMoneyParser.dedupKey(a) != SmsMoneyParser.dedupKey(b))
+    }
+
+    // No parseable ref → a body-hash key (never null), so dedup is never silently skipped;
+    // an identical re-delivery of that body still shares the key.
+    @Test
+    fun dedupKey_noRef_fallsBackToBodyHash_neverNull() {
+        val noRef = "Waxaad  \$3 u sariftay SLSH30,000SOMEONE(252634480003)."
+        val key = SmsMoneyParser.dedupKey(noRef)
+        assertTrue(key.startsWith("b:"))
+        assertEquals(key, SmsMoneyParser.dedupKey(noRef))
+    }
+
+    // --- exchangeSignature: content-based dedup that survives a DIFFERENT ref. This is
+    //     the fix for the real bug — Zaad re-delivered the same exchange minutes apart
+    //     with a new "Tixraac" ref, so ref-only dedup let a second (failing) forward
+    //     through and double-counted the received total. ---
+
+    // THE KEY CASE: same exchange (same $, same SLSH, same counterparty) delivered twice
+    // with DIFFERENT refs → SAME signature, so the windowed dedup collapses the duplicate.
+    @Test
+    fun exchangeSignature_sameExchange_differentRef_sameSignature() {
+        val first = "[-[-ADEEGA SARIFKA-]-] \n Tixraac: 15480615237, Waxaad  \$1 u sariftay " +
+            "SLSH11,000SUHAYB CABDIKARIIN AXMED GUDAAL(252634480003)."
+        val reDelivered = "[-[-ADEEGA SARIFKA-]-] \n Tixraac: 15480699999, Waxaad  \$1 u sariftay " +
+            "SLSH11,000SUHAYB CABDIKARIIN AXMED GUDAAL(252634480003)."
+        assertEquals(SmsMoneyParser.exchangeSignature(first), SmsMoneyParser.exchangeSignature(reDelivered))
+    }
+
+    // Different dollar amount → different signature (a genuine other exchange still forwards).
+    @Test
+    fun exchangeSignature_differentAmount_differentSignature() {
+        val one = "Tixraac: 1, Waxaad  \$1 u sariftay SLSH11,000NAME(252634480003)."
+        val two = "Tixraac: 2, Waxaad  \$2 u sariftay SLSH22,000NAME(252634480003)."
+        assertTrue(SmsMoneyParser.exchangeSignature(one) != SmsMoneyParser.exchangeSignature(two))
+    }
+
+    // Different counterparty phone → different signature (two people, same $ → both forward).
+    @Test
+    fun exchangeSignature_differentCounterparty_differentSignature() {
+        val a = "Tixraac: 1, Waxaad  \$3 u sariftay SLSH30,000NAME(252634480003)."
+        val b = "Tixraac: 2, Waxaad  \$3 u sariftay SLSH30,000NAME(252634111111)."
+        assertTrue(SmsMoneyParser.exchangeSignature(a) != SmsMoneyParser.exchangeSignature(b))
+    }
+
+    // A non-exchange message has no signature (nothing to dedup as a forward).
+    @Test
+    fun exchangeSignature_nonExchange_isNull() {
+        val otp = "-ZAAD SERVICES- Access code is 137940. Fadlan Code-kan cidna hala wadaagin"
+        assertNull(SmsMoneyParser.exchangeSignature(otp))
+    }
+
     // Sender gate in isolation: only 898 counts as the Zaad dollar service.
     @Test
     fun zaad898Sender_matchesOnly898() {

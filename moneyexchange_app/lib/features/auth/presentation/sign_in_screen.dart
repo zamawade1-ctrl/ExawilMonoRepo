@@ -280,7 +280,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
         keyboardType: TextInputType.number,
         // Fixed country code + exactly 9 national digits.
         prefixText: '$_kCountryCode ',
-        hintText: '61 234 5678',
+        hintText: '63 234 5678',
         inputFormatters: [
           FilteringTextInputFormatter.digitsOnly,
           LengthLimitingTextInputFormatter(9),

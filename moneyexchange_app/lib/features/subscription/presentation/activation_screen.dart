@@ -7,6 +7,7 @@ import '../../../core/config/billing_info.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../data/subscription_api.dart';
+import '../domain/pending_activation_code.dart';
 import 'plan_providers.dart';
 
 /// The gate shown when a trial or paid plan has expired: every other page is
@@ -24,14 +25,35 @@ class _ActivationScreenState extends ConsumerState<ActivationScreen> {
   bool _busy = false;
   String? _error;
 
+  /// The code we last auto-filled from a delivered pending code — so when a *newer* code arrives we
+  /// replace it, but we never clobber something the user typed themselves.
+  String? _autofilled;
+
   @override
   void dispose() {
     _codeController.dispose();
     super.dispose();
   }
 
+  /// Copies a freshly delivered pending code into the input the first time it lands (and whenever a
+  /// different one replaces it), unless the user has typed their own code in the meantime.
+  void _syncAutofill(PendingActivationCode? pending) {
+    if (pending == null) return;
+    final current = _codeController.text.trim();
+    if (current.isEmpty || current == _autofilled) {
+      if (current != pending.code) {
+        _codeController.text = pending.code;
+        _codeController.selection =
+            TextSelection.collapsed(offset: pending.code.length);
+      }
+      _autofilled = pending.code;
+    }
+  }
+
   Future<void> _activate() async {
-    final code = _codeController.text.trim();
+    final typed = _codeController.text.trim();
+    final code =
+        typed.isNotEmpty ? typed : (ref.read(pendingActivationCodeProvider)?.code ?? '');
     if (code.isEmpty) {
       setState(() => _error = 'Enter your activation code.');
       return;
@@ -55,6 +77,23 @@ class _ActivationScreenState extends ConsumerState<ActivationScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // The admin-minted code waiting for this account, delivered live by the session poll. When it
+    // appears (or a newer one replaces it) we drop it straight into the input — no typing, no refresh.
+    final pending = ref.watch(pendingActivationCodeProvider);
+    ref.listen<PendingActivationCode?>(
+      pendingActivationCodeProvider,
+      (_, next) {
+        if (!mounted) return;
+        setState(() {
+          _syncAutofill(next);
+          if (next != null) _error = null;
+        });
+      },
+    );
+    // Also handle a code that was already present when this screen first mounted (listen only fires
+    // on change), so it's pre-filled on first paint.
+    _syncAutofill(pending);
+
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -71,18 +110,26 @@ class _ActivationScreenState extends ConsumerState<ActivationScreen> {
                     height: 88,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.errorContainer,
+                      color: pending != null
+                          ? theme.colorScheme.primaryContainer
+                          : theme.colorScheme.errorContainer,
                       shape: BoxShape.circle,
                     ),
                     child: Icon(
-                      Icons.lock_clock_outlined,
+                      pending != null
+                          ? Icons.vpn_key_rounded
+                          : Icons.lock_clock_outlined,
                       size: 44,
-                      color: theme.colorScheme.onErrorContainer,
+                      color: pending != null
+                          ? theme.colorScheme.onPrimaryContainer
+                          : theme.colorScheme.onErrorContainer,
                     ),
                   ),
                   const SizedBox(height: 20),
                   Text(
-                    'Your access has expired',
+                    pending != null
+                        ? 'Your activation code is ready'
+                        : 'Your access has expired',
                     style: theme.textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.w800,
                       color: AppTheme.brandNameGreen,
@@ -91,16 +138,22 @@ class _ActivationScreenState extends ConsumerState<ActivationScreen> {
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    'Your ${AppInfo.appName} trial or plan has ended, so forwarding is '
-                    'paused. Enter an activation code to reactivate your account and '
-                    'get another month of Pro.',
+                    pending != null
+                        ? 'We\'ve added your code below. Just tap Activate to '
+                            'reactivate your account and continue.'
+                        : 'Your ${AppInfo.appName} trial or plan has ended, so '
+                            'forwarding is paused. Enter an activation code to '
+                            'reactivate your account and get another month of Pro.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 24),
-                  const _PayToCard(),
+                  if (pending != null)
+                    _PendingCodeCard(pending: pending)
+                  else
+                    const _PayToCard(),
                   const SizedBox(height: 20),
                   TextField(
                     controller: _codeController,
@@ -152,6 +205,98 @@ class _ActivationScreenState extends ConsumerState<ActivationScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Shows the activation code the admin just minted for this account, delivered live to the user's
+/// page. The code is displayed in full (no copy-from-WhatsApp needed) with a Copy button; it's also
+/// pre-filled into the input above, so the user only has to tap Activate.
+class _PendingCodeCard extends StatelessWidget {
+  const _PendingCodeCard({required this.pending});
+  final PendingActivationCode pending;
+
+  void _copy(BuildContext context) {
+    Clipboard.setData(ClipboardData(text: pending.code));
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(content: Text('Activation code copied')),
+      );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primaryContainer.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.check_circle, size: 18, color: theme.colorScheme.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  pending.planKind != null
+                      ? 'Activation code · ${pending.planKind}'
+                      : 'Your activation code',
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // The code itself is a tappable surface: tapping anywhere on it copies, and the trailing
+          // copy icon repeats the affordance for discoverability.
+          Material(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => _copy(context),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        pending.code,
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ),
+                    Icon(Icons.copy_rounded,
+                        size: 20, color: theme.colorScheme.primary),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => _copy(context),
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Copy code'),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

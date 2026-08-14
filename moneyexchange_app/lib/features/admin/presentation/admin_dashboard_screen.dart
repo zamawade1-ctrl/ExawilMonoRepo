@@ -20,6 +20,13 @@ const Color _adminAccentDark = Color(0xFF0E6853);
 /// Which admin tab is showing.
 enum _AdminTab { overview, users, billing }
 
+/// Short local date + time (e.g. "2026-08-14 17:07") for when a code was generated / used.
+String _fmtDateTime(DateTime utc) {
+  final d = utc.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+}
+
 /// USD price a plan-kind label maps to (1 month $10, 1 year $60, Forever $200).
 int? _planPrice(String? planKind) {
   switch ((planKind ?? '').toLowerCase()) {
@@ -564,6 +571,17 @@ class _UserCard extends ConsumerWidget {
                     _MetaChip(
                       icon: Icons.smartphone,
                       text: user.deviceLabel ?? 'Device registered',
+                    ),
+                  // Activation-code status: whether the last code we issued has been used (the plan
+                  // only starts counting on use), plus when it was generated / used.
+                  if (user.latestCodeGeneratedAtUtc != null)
+                    _MetaChip(
+                      icon: user.latestCodeRedeemed
+                          ? Icons.check_circle_outline
+                          : Icons.hourglass_bottom_outlined,
+                      text: user.latestCodeRedeemed
+                          ? 'Code used · ${_fmtDateTime(user.latestCodeRedeemedAtUtc ?? user.latestCodeGeneratedAtUtc!)}'
+                          : 'Code not used · issued ${_fmtDateTime(user.latestCodeGeneratedAtUtc!)}',
                     ),
                 ],
               ),
