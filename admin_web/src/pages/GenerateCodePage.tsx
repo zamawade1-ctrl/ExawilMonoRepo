@@ -162,15 +162,15 @@ function ResultCard({ result }: { result: GeneratedCode }) {
   const toast = useToast();
 
   const shareText =
-    `Your Xawil Pro activation code: ${result.code}` +
+    `Your e-Xawil Pro activation code: ${result.code}` +
     (result.planKind ? ` (${result.planKind})` : '') +
-    `. Open the Xawil app → Activate, and enter this code.`;
+    `. Open the e-Xawil app → Activate, and enter this code.`;
 
   async function share() {
     // Native share sheet (WhatsApp, etc.) where supported; fall back to a WhatsApp deep link.
     if (navigator.share) {
       try {
-        await navigator.share({ title: 'Xawil activation code', text: shareText });
+        await navigator.share({ title: 'e-Xawil activation code', text: shareText });
         return;
       } catch {
         return; // user dismissed the sheet

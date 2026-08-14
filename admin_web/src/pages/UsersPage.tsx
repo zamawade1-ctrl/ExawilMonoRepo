@@ -180,6 +180,7 @@ export function UsersPage() {
             </div>
           ) : (
             <div className="table-card">
+              <div className="table-scroll">
               <table className="datatable">
                 <thead>
                   <tr>
@@ -223,14 +224,37 @@ export function UsersPage() {
                           <td className="muted cell-device">
                             {u.hasDevice ? (u.deviceLabel ?? 'Registered') : '—'}
                           </td>
-                          <td>
-                            <span className={`badge ${badge.className}`}>
-                              {badge.label}
-                            </span>
-                            {view.state !== 'expired' && (
-                              <span className="cell-remaining">
-                                {view.remainingLabel}
+                          <td className="cell-plan">
+                            <div className="cell-plan-head">
+                              <span className={`badge ${badge.className}`}>
+                                {badge.label}
                               </span>
+                              {view.state !== 'expired' && (
+                                <span className="cell-remaining">
+                                  {view.remainingLabel} left
+                                </span>
+                              )}
+                            </div>
+                            {view.state !== 'expired' && (
+                              <div
+                                className={`plan-bar ${badge.className} cell-plan-bar`}
+                                role="progressbar"
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={Math.round(
+                                  view.progressRemaining * 100,
+                                )}
+                                title={`${Math.round(
+                                  view.progressRemaining * 100,
+                                )}% of the ${badge.label.toLowerCase()} period remaining`}
+                              >
+                                <div
+                                  className="plan-bar-fill"
+                                  style={{
+                                    width: `${view.progressRemaining * 100}%`,
+                                  }}
+                                />
+                              </div>
                             )}
                           </td>
                           <td className="muted">{u.planKind ?? '—'}</td>
@@ -243,6 +267,7 @@ export function UsersPage() {
                   )}
                 </tbody>
               </table>
+              </div>
 
               <div className="pagination">
                 <span className="pagination-info">
