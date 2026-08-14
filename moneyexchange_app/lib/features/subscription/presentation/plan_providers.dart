@@ -9,11 +9,28 @@ import '../../../core/device/device_identity.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../../forwarding/data/forwarding_channel.dart';
 import '../data/subscription_api.dart';
+import '../domain/pending_activation_code.dart';
 import '../domain/plan_snapshot.dart';
 
 final subscriptionApiProvider = Provider(
   (ref) => SubscriptionApi(dio: ref.watch(apiClientProvider).dio),
 );
+
+/// The activation code an admin has minted for the signed-in account and that is still redeemable,
+/// or null when none is waiting. Written by [PlanController] on every session poll (so it updates in
+/// near-real-time, no refresh) and read by the activation screen to show the code inline. Cleared the
+/// moment a code is redeemed or the user signs out, so a used code never lingers on screen.
+final pendingActivationCodeProvider =
+    NotifierProvider<PendingActivationCodeNotifier, PendingActivationCode?>(
+  PendingActivationCodeNotifier.new,
+);
+
+class PendingActivationCodeNotifier extends Notifier<PendingActivationCode?> {
+  @override
+  PendingActivationCode? build() => null;
+
+  void set(PendingActivationCode? code) => state = code;
+}
 
 /// The single source of truth for the signed-in user's trial/plan state. Seeds
 /// from the cached snapshot (so the countdown survives a cold start / offline),
@@ -45,6 +62,13 @@ class PlanController extends AsyncNotifier<PlanSnapshot?> {
     _lifecycle = null;
   }
 
+  /// Publishes the latest waiting activation code (or null) to [pendingActivationCodeProvider] so the
+  /// activation screen updates live. Safe to call after the first `await` in build (we're past this
+  /// notifier's synchronous initialization, so touching another provider is allowed).
+  void _setPending(PendingActivationCode? code) {
+    ref.read(pendingActivationCodeProvider.notifier).set(code);
+  }
+
   @override
   Future<PlanSnapshot?> build() async {
     // A rebuild (e.g. the signed-in user changed) supersedes any pending timers/listeners.
@@ -52,7 +76,11 @@ class PlanController extends AsyncNotifier<PlanSnapshot?> {
     ref.onDispose(_stopWatchers);
 
     final user = ref.watch(authControllerProvider).value;
-    if (user == null) return null;
+    if (user == null) {
+      // Signed out: never leave a previous user's pending code on screen.
+      _setPending(null);
+      return null;
+    }
 
     PlanSnapshot? snapshot;
     // 1. Seed from the cached snapshot so we have something immediately.
@@ -74,6 +102,7 @@ class PlanController extends AsyncNotifier<PlanSnapshot?> {
         return null;
       }
       snapshot = result.plan;
+      _setPending(result.pendingCode);
       await ref.read(sessionStorageProvider).savePlan(result.plan.toJson());
     } catch (_) {
       // Offline / backend down: fall back to the cached snapshot.
@@ -110,6 +139,7 @@ class PlanController extends AsyncNotifier<PlanSnapshot?> {
       }
 
       final fresh = result.plan;
+      _setPending(result.pendingCode);
       await ref.read(sessionStorageProvider).savePlan(fresh.toJson());
 
       final changed = current == null ||
@@ -171,6 +201,9 @@ class PlanController extends AsyncNotifier<PlanSnapshot?> {
   /// Throws [SubscriptionException] with a user-facing message on failure.
   Future<PlanSnapshot> redeem(String code) async {
     final fresh = await ref.read(subscriptionApiProvider).redeem(code);
+    // The code is now consumed — clear it immediately so the card can't be reused on screen (the
+    // next poll would also return null, but don't wait for it).
+    _setPending(null);
     await ref.read(sessionStorageProvider).savePlan(fresh.toJson());
     state = AsyncData(fresh);
     await _applyToNative(fresh);

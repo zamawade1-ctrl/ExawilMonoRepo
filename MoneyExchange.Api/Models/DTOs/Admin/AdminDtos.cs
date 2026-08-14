@@ -77,4 +77,23 @@ public class AdminUserDto
     public DateTime? PlanStartedAtUtc { get; set; }
 
     public PlanStatusDto Plan { get; set; } = new();
+
+    /// <summary>
+    /// When the most recent activation code was generated for this account, or null if none has ever
+    /// been minted. Lets the admin table show "issued a code at &lt;time&gt;" — the moment of hand-off,
+    /// distinct from when (if ever) the plan actually starts counting on redemption.
+    /// </summary>
+    public DateTime? LatestCodeGeneratedAtUtc { get; set; }
+
+    /// <summary>
+    /// Whether that most recent code has been redeemed. False means "issued but not used yet", so the
+    /// admin can see a customer who was given a code but hasn't activated — and the plan hasn't begun.
+    /// </summary>
+    public bool LatestCodeRedeemed { get; set; }
+
+    /// <summary>
+    /// When the most recent code was redeemed (the instant the plan duration actually started
+    /// counting), or null if it's still unused. Null + a non-null generated-at = "waiting to be used".
+    /// </summary>
+    public DateTime? LatestCodeRedeemedAtUtc { get; set; }
 }

@@ -67,6 +67,11 @@ export const adminUserSchema = z.object({
   planKind: z.string().nullish(),
   planStartedAtUtc: z.string().nullish(),
   plan: planStatusSchema,
+  // Latest activation code issued to this account: when it was generated, whether it's been used,
+  // and when. Lets the table show "issued but not used yet" vs "used at <time>".
+  latestCodeGeneratedAtUtc: z.string().nullish(),
+  latestCodeRedeemed: z.boolean().default(false),
+  latestCodeRedeemedAtUtc: z.string().nullish(),
 });
 
 export type AdminUser = z.infer<typeof adminUserSchema>;

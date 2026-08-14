@@ -19,6 +19,7 @@ type SortKey =
   | 'device'
   | 'plan'
   | 'kind'
+  | 'activation'
   | 'joined'
   | 'lastModified';
 type SortDir = 'asc' | 'desc';
@@ -38,6 +39,7 @@ const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
   { key: 'device', label: 'Device' },
   { key: 'plan', label: 'Plan' },
   { key: 'kind', label: 'Plan kind' },
+  { key: 'activation', label: 'Activation code' },
   { key: 'lastModified', label: 'Last edited' },
 ];
 
@@ -47,7 +49,7 @@ const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
  * the right for the selected account (details + admin actions).
  */
 export function UsersPage() {
-  const { users, fetchedAt, loading, error, reload } = useUsers();
+  const { users, fetchedAt, loading, refreshing, error, reload } = useUsers();
   const navigate = useNavigate();
 
   const [query, setQuery] = useState('');
@@ -94,6 +96,11 @@ export function UsersPage() {
           return planRemainingMs(u.plan, fetchedAt);
         case 'kind':
           return (u.planKind ?? '').toLowerCase();
+        case 'activation':
+          // Sort by when a code was last issued (never-issued sinks to the bottom).
+          return u.latestCodeGeneratedAtUtc
+            ? new Date(u.latestCodeGeneratedAtUtc).getTime()
+            : 0;
         case 'joined':
           return new Date(u.createdAtUtc).getTime();
         case 'lastModified':
@@ -137,8 +144,12 @@ export function UsersPage() {
         subtitle={`${customers.length} customer${customers.length === 1 ? '' : 's'}`}
         action={
           <div className="page-header-buttons">
-            <button className="btn btn-ghost" onClick={() => reload()}>
-              Refresh
+            <button
+              className="btn btn-ghost"
+              onClick={() => reload()}
+              disabled={refreshing}
+            >
+              {refreshing ? 'Refreshing…' : 'Refresh'}
             </button>
             <button className="btn btn-primary" onClick={() => navigate('/codes')}>
               Generate code
@@ -258,6 +269,9 @@ export function UsersPage() {
                             )}
                           </td>
                           <td className="muted">{u.planKind ?? '—'}</td>
+                          <td>
+                            <ActivationCell user={u} />
+                          </td>
                           <td className="muted">
                             {fmtDate(u.lastModifiedAtUtc ?? u.createdAtUtc)}
                           </td>
@@ -312,6 +326,33 @@ export function UsersPage() {
   );
 }
 
+/**
+ * Activation-code status for one customer: whether the last code we issued has been used, and when
+ * it was generated. "Not used yet" signals the plan hasn't started counting (redemption is what
+ * starts it); "Used" shows the redemption time. No code ever issued → a plain dash.
+ */
+function ActivationCell({ user }: { user: AdminUser }) {
+  if (!user.latestCodeGeneratedAtUtc) {
+    return <span className="muted">—</span>;
+  }
+  const used = user.latestCodeRedeemed;
+  return (
+    <div className="activation-cell">
+      <span className={`badge ${used ? 'badge-pro' : 'badge-trial'}`}>
+        {used ? 'Used' : 'Not used'}
+      </span>
+      <span className="activation-sub muted">
+        Generated {fmtDateTime(user.latestCodeGeneratedAtUtc)}
+      </span>
+      {used && user.latestCodeRedeemedAtUtc && (
+        <span className="activation-sub muted">
+          Used {fmtDateTime(user.latestCodeRedeemedAtUtc)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function SortCaret({ active, dir }: { active: boolean; dir: SortDir }) {
   return (
     <span className={`sort-caret${active ? ' sort-active' : ''}`}>
@@ -339,5 +380,19 @@ function fmtDate(iso: string): string {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
+      });
+}
+
+/** Date + time (the moment a code was generated / used), e.g. "14 Aug 2026, 17:07". */
+function fmtDateTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : d.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
       });
 }

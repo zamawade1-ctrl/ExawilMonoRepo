@@ -678,6 +678,17 @@
   margin-top: 7px;
   max-width: 220px;
 }
+/* Activation column: a Used/Not-used badge stacked over the generated (+ used) times. */
+.activation-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.activation-sub {
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
 .table-empty {
   text-align: center;
   color: var(--muted);

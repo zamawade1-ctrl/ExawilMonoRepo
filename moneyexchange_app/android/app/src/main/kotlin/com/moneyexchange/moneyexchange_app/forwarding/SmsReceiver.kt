@@ -100,11 +100,16 @@ class SmsReceiver : BroadcastReceiver() {
             Log.d(TAG, "898 SMS is not a dollar exchange ('\$X u sariftay'); ignoring.")
             return
         }
-        // Dedup by the transaction ref: the same exchange is double-delivered, and we
-        // must never forward it twice. The service check-and-marks it atomically.
+        // Dedup by a content SIGNATURE (dollars + shilling + counterparty phone) within a
+        // time window: the same exchange is re-delivered — sometimes minutes apart with a
+        // DIFFERENT "Tixraac" ref — and we must never forward, or count as received, the
+        // same one twice. The signature is identical across every copy regardless of the
+        // ref, so it catches the duplicates that ref-only dedup missed. The service
+        // check-and-marks it atomically; [ref] still keys the ledger's RECEIVED/FORWARDED.
         val ref = SmsMoneyParser.exchangeRef(body)
-        Log.i(TAG, "898 exchange \$$amount (ref=${ref ?: "?"}); forwarding that amount to the destination (no *800#).")
-        ForwardingForegroundService.forwardAmountFromMessage(context, amount, ref)
+        val signature = SmsMoneyParser.exchangeSignature(body) ?: SmsMoneyParser.dedupKey(body)
+        Log.i(TAG, "898 exchange \$$amount (ref=${ref ?: "?"}, sig=$signature); forwarding that amount to the destination (no *800#).")
+        ForwardingForegroundService.forwardAmountFromMessage(context, amount, signature, ref)
     }
 
     /** Auto-forward targets Zaad Shilling (sender 222 / "ZAAD"). */

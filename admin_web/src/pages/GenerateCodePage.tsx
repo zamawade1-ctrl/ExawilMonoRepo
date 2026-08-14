@@ -90,7 +90,7 @@ export function GenerateCodePage() {
     <>
       <PageHeader
         title="Generate activation code"
-        subtitle="Mint phone-bound code(s) granting Pro access."
+        subtitle="Mint a phone-bound code — it appears on that customer’s activation page in the app in real time."
       />
 
       <div className="form-narrow">
@@ -206,7 +206,9 @@ function ResultCard({ result }: { result: GeneratedCode }) {
         {result.assignedToPhone ? ` · bound to ${result.assignedToPhone}` : ''}
       </p>
       <p className="result-note">
-        Share this with the customer over WhatsApp. Only their number can redeem it.
+        {result.assignedToPhone
+          ? 'This code now appears automatically on the customer’s activation page in the app — no need to send it. Only their number can redeem it, and it disappears once used. You can still share it below if they ask.'
+          : 'Bearer code — not tied to a number. Share it with the customer; anyone can redeem it once.'}
       </p>
     </div>
   );

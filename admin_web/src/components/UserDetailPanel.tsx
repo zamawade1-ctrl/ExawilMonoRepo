@@ -118,6 +118,15 @@ function UserDetail({
         <Meta label="Device" value={user.hasDevice ? (user.deviceLabel ?? 'Registered') : 'None'} />
         <Meta label="Joined" value={fmtDate(user.createdAtUtc)} />
         <Meta label="Last login" value={fmtDate(user.lastLoginAtUtc)} />
+        <Meta
+          label="Code issued"
+          value={
+            user.latestCodeGeneratedAtUtc
+              ? fmtDateTime(user.latestCodeGeneratedAtUtc)
+              : 'Never'
+          }
+        />
+        <Meta label="Code status" value={codeStatus(user)} />
       </dl>
 
       <div className="detail-actions">
@@ -364,6 +373,30 @@ function fmtDate(iso: string): string {
   return Number.isNaN(d.getTime())
     ? '—'
     : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function fmtDateTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : d.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+}
+
+/** "Used <when>" / "Not used yet" / "—", for the detail panel's activation summary. */
+function codeStatus(user: AdminUser): string {
+  if (!user.latestCodeGeneratedAtUtc) return '—';
+  if (user.latestCodeRedeemed) {
+    return user.latestCodeRedeemedAtUtc
+      ? `Used ${fmtDateTime(user.latestCodeRedeemedAtUtc)}`
+      : 'Used';
+  }
+  return 'Not used yet';
 }
 
 function SelectIcon() {
