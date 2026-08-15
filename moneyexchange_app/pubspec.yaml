@@ -48,6 +48,11 @@ dependencies:
   fl_chart: ^1.2.0
   device_info_plus: ^11.2.0
   crypto: ^3.0.6
+  # Mandatory in-app update: download the signed APK and hand it to Android's
+  # native package installer (open_filex bundles the FileProvider needed to open
+  # an APK on Android 7+); path_provider gives the download directory.
+  open_filex: ^4.5.0
+  path_provider: ^2.1.5
   flutter_phone_direct_caller: ^2.2.1
   # Pinned to 11.x: permission_handler_android 14 (pulled by 12+/13) ships a build.gradle.kts that
   # fails to compile against this project's toolchain (AGP 8.11 / Kotlin 2.2 / Gradle 8.14). The

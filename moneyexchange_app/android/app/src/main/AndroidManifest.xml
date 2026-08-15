@@ -24,6 +24,9 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <!-- Device-auth app lock (local_auth): biometric unlock with device-PIN fallback. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+    <!-- Mandatory in-app update: lets the app launch Android's package installer
+         for the downloaded APK (the "install unknown apps" source permission). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 
     <application
         android:label="e-Xawil"
