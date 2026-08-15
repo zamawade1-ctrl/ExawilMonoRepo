@@ -14,13 +14,33 @@ interface Dhm {
 
 const toMinutes = (d: Dhm) => d.days * 1440 + d.hours * 60 + d.minutes;
 
-/** Plan kinds the admin can grant — mapped to a duration (Forever is a backend sentinel). */
-type PlanKind = 'month' | 'sixMonths' | 'year' | 'forever' | 'custom';
-const PLAN_KINDS: { key: PlanKind; label: string; minutes: number }[] = [
-  { key: 'month', label: '1 month', minutes: 30 * 1440 },
+/**
+ * Plan kinds the admin can grant — mapped to a duration ("Forever" and "Free
+ * unlimited" are both the backend never-expires sentinel, differing only in price:
+ * $200 vs $0). `priceUsd` is recorded for the admin billing view (undefined =
+ * unpriced: 6 months / custom fall back to the duration-derived price).
+ */
+type PlanKind =
+  | 'month'
+  | 'month5'
+  | 'sixMonths'
+  | 'year'
+  | 'forever'
+  | 'freeUnlimited'
+  | 'custom';
+const PLAN_KINDS: {
+  key: PlanKind;
+  label: string;
+  minutes: number;
+  forever?: boolean;
+  priceUsd?: number;
+}[] = [
+  { key: 'month', label: '1 month · $10', minutes: 30 * 1440, priceUsd: 10 },
+  { key: 'month5', label: '1 month · $5', minutes: 30 * 1440, priceUsd: 5 },
   { key: 'sixMonths', label: '6 months', minutes: 182 * 1440 },
-  { key: 'year', label: '1 year', minutes: 365 * 1440 },
-  { key: 'forever', label: 'Forever', minutes: 0 },
+  { key: 'year', label: '1 year · $60', minutes: 365 * 1440, priceUsd: 60 },
+  { key: 'forever', label: 'Forever · $200', minutes: 0, forever: true, priceUsd: 200 },
+  { key: 'freeUnlimited', label: 'Free unlimited', minutes: 0, forever: true, priceUsd: 0 },
   { key: 'custom', label: 'Custom', minutes: 0 },
 ];
 
@@ -46,8 +66,8 @@ export function GenerateCodePage() {
   async function generate() {
     setError(null);
     setResults([]);
-    const forever = kind === 'forever';
     const preset = PLAN_KINDS.find((k) => k.key === kind);
+    const forever = preset?.forever ?? false;
     const durationMinutes = forever
       ? 1 // placeholder; backend overrides with the forever sentinel
       : kind === 'custom'
@@ -60,6 +80,7 @@ export function GenerateCodePage() {
       expiresInMinutes: toMinutes(expiry),
       forever,
       count,
+      priceUsd: preset?.priceUsd,
     });
     if (!parsed.success) {
       const errs = parsed.error.flatten().fieldErrors;

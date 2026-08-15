@@ -128,6 +128,9 @@ export const generateCodeSchema = z.object({
     .int()
     .min(1, 'Mint at least one code.')
     .max(100, 'At most 100 codes.'),
+  // USD price this plan represents, for the admin billing view. Optional (null = unpriced;
+  // distinguishes the $10 and $5 one-month plans and a $0 free plan).
+  priceUsd: z.number().int().optional(),
 });
 
 export type GenerateCodeInput = z.infer<typeof generateCodeSchema>;

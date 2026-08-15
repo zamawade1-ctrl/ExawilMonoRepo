@@ -27,6 +27,7 @@ export const adminApi = {
     expiresInMinutes: number;
     forever?: boolean;
     count: number;
+    priceUsd?: number;
   }): Promise<GeneratedCode[]> =>
     apiRequest<GeneratedCode[]>('/api/admin/activation-codes', {
       method: 'POST',

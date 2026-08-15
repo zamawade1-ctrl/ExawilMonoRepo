@@ -44,7 +44,8 @@ class BillingInfo {
       name: 'Free Unlimited',
       priceUsd: 0,
       period: 'unlimited',
-      tagline: 'No cost, never expires',
+      tagline: 'No cost, never expires (admin only)',
+      visibleToCustomers: false,
     ),
   ];
 
