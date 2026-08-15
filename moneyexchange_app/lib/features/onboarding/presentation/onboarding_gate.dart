@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../accessibility/presentation/accessibility_guide_dialog.dart';
 import '../../accessibility/presentation/overlay_guide_dialog.dart';
+import '../../auth/presentation/auth_providers.dart';
 import '../../forwarding/data/forwarding_channel.dart';
 import '../../forwarding/presentation/forwarding_providers.dart';
 import '../../home/presentation/home_shell.dart';
@@ -19,14 +20,16 @@ import '../../home/presentation/home_shell.dart';
 /// checklist screen. The app is never blocked behind setup: the user can use it
 /// immediately and grant (or decline) via the system dialogs.
 ///
-/// The accessibility (auto-type PIN) service can't be granted by a runtime
-/// dialog — Android only exposes it through Settings — so right after the
-/// runtime prompts, if it isn't on yet, this shows the [AccessibilityGuideDialog]
-/// asking the user to enable it (and, on accept, opens the Accessibility
-/// settings). This runs on every entry to the home shell, so a user who hasn't
-/// enabled the service yet is re-asked via the same dialog next launch — there
-/// is no standalone Accessibility page anymore. iOS has no on-device forwarder,
-/// so nothing is requested there.
+/// The accessibility (auto-type PIN) service and the "display over other apps"
+/// overlay can't be granted by a runtime dialog — Android only exposes them
+/// through Settings — so right after the runtime prompts, if either is off, this
+/// shows a guide dialog asking the user to enable it (and, on accept, opens the
+/// relevant settings). This whole guided flow runs **once per install**, the
+/// first time someone signs up and starts using the app (tracked via
+/// [SessionStorage.hasShownFirstRunGuides]); it deliberately does NOT re-pop on
+/// later launches. A still-missing permission is surfaced afterwards by the
+/// Forwarding mode card's tappable banner instead, which opens the right settings
+/// on tap. iOS has no on-device forwarder, so nothing is requested there.
 class HomeGate extends ConsumerStatefulWidget {
   const HomeGate({super.key});
 
@@ -58,10 +61,16 @@ class _HomeGateState extends ConsumerState<HomeGate> {
   ///      Settings-only — the forwarder draws the USSD auto-fill overlay on top
   ///      of the dialer), ask via the [OverlayGuideDialog] and open the overlay
   ///      settings on accept.
-  /// A returning user who's already granted everything is never prompted.
-  /// Best-effort: any failure is swallowed; the same dialogs are re-shown on the
-  /// next entry to the home shell while a permission is still off.
+  /// Runs at most **once per install**: gated on [SessionStorage.hasShownFirstRunGuides]
+  /// so the guided dialogs (and the system overlay/accessibility settings they
+  /// open) never re-pop on later launches — the earlier behaviour of re-showing
+  /// them on every home entry is what made "display over other apps" keep
+  /// re-appearing. Afterwards, a still-missing permission is nudged via the
+  /// Forwarding mode card's tappable banner. Best-effort: any failure is
+  /// swallowed, and the one-shot flag is still set so we don't loop.
   Future<void> _runFirstRunSetup() async {
+    final sessionStorage = ref.read(sessionStorageProvider);
+    if (await sessionStorage.hasShownFirstRunGuides()) return;
     try {
       var status = await _channel.getStatus();
       final needsRuntime = !(status.hasSmsPermission &&
@@ -93,8 +102,12 @@ class _HomeGateState extends ConsumerState<HomeGate> {
         }
       }
     } on PlatformException {
-      // Ignore — the guide dialogs are re-shown on the next entry to the home
-      // shell while a permission is still off.
+      // Ignore — a permission still off after this is surfaced by the Forwarding
+      // mode card's tappable banner, not by re-popping this flow.
+    } finally {
+      // One-shot: mark the guides shown even on an early/error exit so the flow
+      // never loops or re-pops on later launches.
+      await sessionStorage.markFirstRunGuidesShown();
     }
   }
 

@@ -16,6 +16,15 @@ class SessionStorage {
   static const _userProfileKey = 'user_profile';
   static const _planKey = 'plan_snapshot';
 
+  /// Whether the first-run permission guides (accessibility + "display over
+  /// other apps") have been presented once on this install. Device-level
+  /// permissions persist across users, so this is intentionally **install-wide**
+  /// and NOT cleared on sign-out/[clear] — the guided dialogs should appear only
+  /// the first time someone signs up and starts using the app, never re-popping
+  /// on later launches. The ongoing nudge for a still-missing permission lives in
+  /// the Forwarding mode card's (tappable) banner instead.
+  static const _firstRunGuidesKey = 'first_run_guides_shown';
+
   final FlutterSecureStorage _storage;
 
   /// Persists the session. [accessToken] is optional: a local, on-device session
@@ -61,9 +70,21 @@ class SessionStorage {
     return jsonDecode(raw) as Map<String, dynamic>;
   }
 
+  /// True once the first-run permission guides have been shown on this install.
+  /// See [_firstRunGuidesKey]: install-wide, survives sign-out.
+  Future<bool> hasShownFirstRunGuides() async =>
+      (await _storage.read(key: _firstRunGuidesKey)) == 'true';
+
+  /// Records that the first-run permission guides have been presented, so they
+  /// never auto-re-pop on later launches.
+  Future<void> markFirstRunGuidesShown() =>
+      _storage.write(key: _firstRunGuidesKey, value: 'true');
+
   Future<void> clear() async {
     await _storage.delete(key: _accessTokenKey);
     await _storage.delete(key: _userProfileKey);
     await _storage.delete(key: _planKey);
+    // NB: _firstRunGuidesKey is deliberately NOT cleared here — the guided
+    // permission prompts are once-per-install, not once-per-session.
   }
 }

@@ -28,11 +28,17 @@ class SectionStatusBanner extends StatelessWidget {
     required this.icon,
     required this.text,
     required this.tone,
+    this.onTap,
   });
 
   final IconData icon;
   final String text;
   final SectionBannerTone tone;
+
+  /// When non-null, the whole banner becomes tappable (e.g. a pending banner
+  /// whose missing piece is a permission — tapping it opens the right settings).
+  /// A trailing chevron is shown to signal it's actionable.
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -52,13 +58,8 @@ class SectionStatusBanner extends StatelessWidget {
       ),
     };
 
-    return Container(
-      width: double.infinity,
+    final content = Padding(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(12),
-      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -73,8 +74,25 @@ class SectionStatusBanner extends StatelessWidget {
               ),
             ),
           ),
+          if (onTap != null) ...[
+            const SizedBox(width: 8),
+            Icon(Icons.chevron_right, color: fg, size: 20),
+          ],
         ],
       ),
+    );
+
+    final radius = BorderRadius.circular(12);
+    return Material(
+      color: bg,
+      borderRadius: radius,
+      clipBehavior: Clip.antiAlias,
+      child: onTap == null
+          ? SizedBox(width: double.infinity, child: content)
+          : InkWell(
+              onTap: onTap,
+              child: SizedBox(width: double.infinity, child: content),
+            ),
     );
   }
 }

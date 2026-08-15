@@ -173,14 +173,14 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
         (s.enabled && s.mode == ForwardingMode.autoForward);
   }
 
-  ({IconData icon, String text, SectionBannerTone tone}) _banner(
-    ForwardingStatus? s,
-  ) {
+  ({IconData icon, String text, SectionBannerTone tone, VoidCallback? onTap})
+  _banner(ForwardingStatus? s) {
     if (s == null) {
       return (
         icon: Icons.hourglass_empty,
         text: 'Checking forwarding status…',
         tone: SectionBannerTone.neutral,
+        onTap: null,
       );
     }
     if (!s.enabled) {
@@ -189,6 +189,7 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
         text:
             'Auto-forwarding is off. Pick a mode below and save to turn it on.',
         tone: SectionBannerTone.neutral,
+        onTap: null,
       );
     }
     if (s.fullyReady) {
@@ -196,21 +197,30 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
         icon: Icons.check_circle,
         text: '${_modeName(s.mode)} mode is active.',
         tone: SectionBannerTone.active,
+        onTap: null,
       );
     }
     // Enabled but not fully ready: name the piece that's ACTUALLY still missing,
     // so we never tell the user to "finish the destination" when they already did
     // and the real blocker is a permission (e.g. the accessibility service, which
-    // resets on a fresh install and must be turned on in Settings).
+    // resets on a fresh install and must be turned on in Settings). When the
+    // blocker is a Settings-only permission, make the banner tappable so it opens
+    // the right screen — this is now the ongoing path to grant it (the first-run
+    // guide dialogs only appear once, on first sign-up), so it must be actionable.
+    const channel = ForwardingChannel();
     final String missing;
+    VoidCallback? onTap;
     if (!s.hasForwardingCredentials) {
       missing = 'finish the destination below';
     } else if (!s.accessibilityEnabled) {
       missing = 'turn on the e-Xawil accessibility service in Settings';
+      onTap = channel.openAccessibilitySettings;
     } else if (!s.overlayEnabled) {
       missing = 'allow display over other apps';
+      onTap = channel.openOverlaySettings;
     } else if (!s.hasSmsPermission || !s.hasCallPermission) {
       missing = 'grant the SMS & phone permissions';
+      onTap = channel.requestPermissions;
     } else {
       missing = 'finish setup';
     }
@@ -218,6 +228,7 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
       icon: Icons.info_outline,
       text: '${_modeName(s.mode)} mode selected — $missing to activate it.',
       tone: SectionBannerTone.pending,
+      onTap: onTap,
     );
   }
 
@@ -261,6 +272,7 @@ class _ForwardingModeCardState extends ConsumerState<ForwardingModeCard> {
           icon: banner.icon,
           text: banner.text,
           tone: banner.tone,
+          onTap: banner.onTap,
         ),
         if (_needsBatteryExemption(status)) ...[
           const SizedBox(height: 12),
