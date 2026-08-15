@@ -34,8 +34,6 @@ class DashboardScreen extends ConsumerWidget {
           const _RangeSelector(),
           const SizedBox(height: 16),
           _TodayForwardedHero(amount: data.todayForwarded),
-          const SizedBox(height: 16),
-          _StatRow(data: data),
           const SizedBox(height: 24),
           _SectionTitle(
             'Forwarded destinations',
@@ -174,97 +172,6 @@ class _TodayForwardedHero extends StatelessWidget {
                 color: theme.colorScheme.onPrimary,
                 fontWeight: FontWeight.w800,
               ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatRow extends StatelessWidget {
-  const _StatRow({required this.data});
-
-  final DashboardData data;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Row(
-      children: [
-        Expanded(
-          child: _StatTile(
-            label: 'Received',
-            value: _money.format(data.rangeReceived),
-            icon: Icons.south_west,
-            color: theme.colorScheme.tertiary,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _StatTile(
-            label: 'Forwarded',
-            value: _money.format(data.rangeForwarded),
-            icon: Icons.north_east,
-            color: theme.colorScheme.primary,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _StatTile(
-            label: data.failedCount > 0 ? '${data.failedCount} failed' : 'Forwards',
-            value: '${data.forwardedCount}',
-            icon: Icons.swap_horiz,
-            color: data.failedCount > 0 ? theme.colorScheme.error : theme.colorScheme.secondary,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _StatTile extends StatelessWidget {
-  const _StatTile({
-    required this.label,
-    required this.value,
-    required this.icon,
-    required this.color,
-  });
-
-  final String label;
-  final String value;
-  final IconData icon;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 18, color: color),
-          const SizedBox(height: 8),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Text(
-              value,
-              style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
         ],

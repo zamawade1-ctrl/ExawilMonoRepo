@@ -275,23 +275,10 @@ class WeeklySummaryCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: _WeekStat(
-                  label: 'Received this week',
-                  value: _money.format(data.weeklyReceived),
-                  color: _receivedColor(context),
-                ),
-              ),
-              Expanded(
-                child: _WeekStat(
-                  label: 'Forwarded this week',
-                  value: _money.format(data.weeklyForwarded),
-                  color: _forwardedColor(context),
-                ),
-              ),
-            ],
+          _WeekStat(
+            label: 'Forwarded this week',
+            value: _money.format(data.weeklyForwarded),
+            color: _forwardedColor(context),
           ),
           const SizedBox(height: 16),
           SizedBox(
