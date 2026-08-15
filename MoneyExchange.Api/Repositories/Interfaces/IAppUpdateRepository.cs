@@ -16,4 +16,11 @@ public interface IAppUpdateRepository
     /// signal — the app must not force an update on it.
     /// </summary>
     Task<ServiceResponse<AppUpdateDto>> GetActiveAsync(string platform);
+
+    /// <summary>
+    /// Records one download of the active release for <paramref name="platform"/>
+    /// (atomic increment) and returns its public APK URL so the caller can redirect
+    /// the client to it. NotFound when no active release exists.
+    /// </summary>
+    Task<ServiceResponse<string>> TrackDownloadAsync(string platform);
 }

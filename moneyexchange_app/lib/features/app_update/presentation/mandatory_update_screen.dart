@@ -3,6 +3,38 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../application/app_update_controller.dart';
 
+/// Human-readable byte size, e.g. "12.3 MB".
+String _fmtBytes(int bytes) {
+  if (bytes <= 0) return '0 MB';
+  const mb = 1024 * 1024;
+  if (bytes >= mb) return '${(bytes / mb).toStringAsFixed(1)} MB';
+  return '${(bytes / 1024).toStringAsFixed(0)} KB';
+}
+
+/// mm:ss elapsed/remaining clock.
+String _fmtDuration(Duration d) {
+  final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+  final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return '$m:$s';
+}
+
+/// The live "12.3 / 25.0 MB · 1.4 MB/s · 00:12 · ~00:09 left" line, showing the
+/// download time in real time. Pieces that aren't known yet are omitted.
+String _downloadDetail(AppUpdateState s) {
+  final parts = <String>[];
+  if (s.totalBytes > 0) {
+    parts.add('${_fmtBytes(s.downloadedBytes)} / ${_fmtBytes(s.totalBytes)}');
+  } else if (s.downloadedBytes > 0) {
+    parts.add(_fmtBytes(s.downloadedBytes));
+  }
+  final speed = s.bytesPerSecond;
+  if (speed > 0) parts.add('${_fmtBytes(speed.round())}/s');
+  parts.add(_fmtDuration(s.elapsed));
+  final eta = s.eta;
+  if (eta != null) parts.add('~${_fmtDuration(eta)} left');
+  return parts.join('  ·  ');
+}
+
 /// The mandatory, NON-DISMISSIBLE update screen. Shown by the update gate
 /// whenever the server reports a newer versionCode than the installed build.
 ///
@@ -110,10 +142,22 @@ class MandatoryUpdateScreen extends ConsumerWidget {
                       Text(
                         state.phase == AppUpdatePhase.downloading
                             ? 'Downloading… ${(state.progress * 100).clamp(0, 100).toStringAsFixed(0)}%'
-                            : 'Opening installer…',
+                            : 'Download complete — opening installer…',
                         textAlign: TextAlign.center,
-                        style: theme.textTheme.bodySmall,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
+                      if (state.phase == AppUpdatePhase.downloading) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          _downloadDetail(state),
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ] else
                       FilledButton.icon(
                         onPressed: controller.downloadAndInstall,

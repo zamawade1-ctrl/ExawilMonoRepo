@@ -193,6 +193,30 @@
   display: grid;
   grid-template-columns: 1.05fr 1fr;
   min-height: 100vh;
+  position: relative;
+}
+.signin-download-link {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--primary);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.signin-download-link:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
 }
 .signin-brand {
   position: relative;
@@ -1558,7 +1582,23 @@
 .download-date {
   color: var(--muted);
   font-size: 0.85rem;
+  margin-bottom: 12px;
+}
+.download-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  padding: 5px 12px;
   margin-bottom: 16px;
+  border-radius: 999px;
+  background: var(--surface-container);
+  color: var(--on-surface);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.download-count svg {
+  color: var(--primary);
 }
 .download-notes {
   text-align: left;

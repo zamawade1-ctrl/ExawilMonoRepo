@@ -49,4 +49,12 @@ public class AppVersion
     public bool IsActive { get; set; } = true;
 
     public DateTime ReleasedAtUtc { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// How many times this release's APK has been downloaded through the public
+    /// tracking redirect (<c>GET /api/app-updates/{platform}/download</c>). Both the
+    /// web download page and the app's mandatory-update flow go through it, so this
+    /// counts real download starts across both. Surfaced on the public download page.
+    /// </summary>
+    public long DownloadCount { get; set; }
 }

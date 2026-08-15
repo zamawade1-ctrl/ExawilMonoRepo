@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -43,6 +44,9 @@ class AppUpdateState {
     this.progress = 0,
     this.errorMessage,
     this.installedVersionCode = 0,
+    this.downloadedBytes = 0,
+    this.totalBytes = 0,
+    this.downloadStartedAt,
   });
 
   final AppUpdatePhase phase;
@@ -57,11 +61,42 @@ class AppUpdateState {
 
   final int installedVersionCode;
 
+  /// Bytes received / total so far in the current download (for the live
+  /// "12.3 / 25.0 MB" + speed + ETA readout on the update screen).
+  final int downloadedBytes;
+  final int totalBytes;
+
+  /// When the current download started, so [elapsed]/[bytesPerSecond]/[eta]
+  /// can be computed live (a 1s ticker in the controller rebuilds the screen
+  /// even between byte-progress callbacks).
+  final DateTime? downloadStartedAt;
+
   /// The update screen is shown for exactly these phases.
   bool get isBlocking =>
       phase == AppUpdatePhase.updateRequired ||
       phase == AppUpdatePhase.downloading ||
       phase == AppUpdatePhase.installing;
+
+  /// Time elapsed since the download began (recomputed each build → live clock).
+  Duration get elapsed => downloadStartedAt == null
+      ? Duration.zero
+      : DateTime.now().difference(downloadStartedAt!);
+
+  /// Current average download speed in bytes/second (0 until enough elapsed).
+  double get bytesPerSecond {
+    final ms = elapsed.inMilliseconds;
+    if (ms <= 0 || downloadedBytes <= 0) return 0;
+    return downloadedBytes / (ms / 1000);
+  }
+
+  /// Estimated time remaining, or null when it can't be estimated yet.
+  Duration? get eta {
+    final speed = bytesPerSecond;
+    if (speed <= 0 || totalBytes <= 0 || downloadedBytes >= totalBytes) {
+      return null;
+    }
+    return Duration(seconds: ((totalBytes - downloadedBytes) / speed).round());
+  }
 
   AppUpdateState copyWith({
     AppUpdatePhase? phase,
@@ -70,13 +105,23 @@ class AppUpdateState {
     String? errorMessage,
     bool clearError = false,
     int? installedVersionCode,
+    int? downloadedBytes,
+    int? totalBytes,
+    DateTime? downloadStartedAt,
+    bool clearDownloadStats = false,
   }) =>
       AppUpdateState(
         phase: phase ?? this.phase,
         info: info ?? this.info,
-        progress: progress ?? this.progress,
+        progress: clearDownloadStats ? 0 : (progress ?? this.progress),
         errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
         installedVersionCode: installedVersionCode ?? this.installedVersionCode,
+        downloadedBytes:
+            clearDownloadStats ? 0 : (downloadedBytes ?? this.downloadedBytes),
+        totalBytes: clearDownloadStats ? 0 : (totalBytes ?? this.totalBytes),
+        downloadStartedAt: clearDownloadStats
+            ? null
+            : (downloadStartedAt ?? this.downloadStartedAt),
       );
 }
 
@@ -101,6 +146,8 @@ final appUpdateControllerProvider =
 class AppUpdateController extends Notifier<AppUpdateState> {
   @override
   AppUpdateState build() {
+    // Stop the download ticker if this notifier is ever disposed.
+    ref.onDispose(_stopTicker);
     // Kick off the first check after the first frame's providers settle.
     Future.microtask(check);
     return const AppUpdateState();
@@ -167,24 +214,30 @@ class AppUpdateController extends Notifier<AppUpdateState> {
       return;
     }
 
-    // 2) Download the signed APK to app storage.
+    // 2) Download the signed APK to app storage, showing live progress/time.
     state = state.copyWith(
       phase: AppUpdatePhase.downloading,
-      progress: 0,
+      clearDownloadStats: true,
+      downloadStartedAt: DateTime.now(),
       clearError: true,
     );
+    _startTicker();
     String filePath;
     try {
       filePath = await _downloadApk(info);
     } catch (_) {
+      _stopTicker();
       state = state.copyWith(
         phase: AppUpdatePhase.updateRequired,
         errorMessage: 'Download failed. Check your connection and try again.',
       );
       return;
     }
+    _stopTicker();
 
-    // 3) Hand the APK to the native package installer.
+    // 3) Download finished → AUTO-INSTALL: hand the APK straight to the native
+    // package installer, no extra tap. (The "Update Now" tap already covers the
+    // download+install as one action.)
     state = state.copyWith(phase: AppUpdatePhase.installing);
     final result = await OpenFilex.open(
       filePath,
@@ -198,6 +251,28 @@ class AppUpdateController extends Notifier<AppUpdateState> {
     }
     // On success the OS installer takes over; when the app resumes after the
     // install, check() re-runs and unblocks only if the new build is >= server.
+  }
+
+  /// A 1-second ticker that nudges the state during a download so the elapsed
+  /// clock / speed / ETA on the update screen advance even between Dio's
+  /// byte-progress callbacks. Started when a download begins, stopped when it
+  /// ends (success or failure) and when the notifier is disposed.
+  Timer? _ticker;
+
+  void _startTicker() {
+    _ticker?.cancel();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (state.phase == AppUpdatePhase.downloading) {
+        state = state.copyWith(); // recompute elapsed/speed/eta getters
+      } else {
+        _stopTicker();
+      }
+    });
+  }
+
+  void _stopTicker() {
+    _ticker?.cancel();
+    _ticker = null;
   }
 
   Future<bool> _ensureInstallPermission() async {
@@ -221,15 +296,38 @@ class AppUpdateController extends Notifier<AppUpdateState> {
     final file = File(path);
     if (await file.exists()) await file.delete();
 
-    await Dio().download(
-      info.apkUrl,
-      path,
-      onReceiveProgress: (received, total) {
-        if (total > 0) {
-          state = state.copyWith(progress: received / total);
-        }
-      },
-    );
+    // Best-effort: count this download server-side. The shared client's base URL
+    // (which honors the local→prod fallback) + the public tracking endpoint that
+    // increments DownloadCount and 302-redirects to the same APK. If it's
+    // unreachable we still fetch the APK directly below — counting must never
+    // block a mandatory update.
+    final base = ref.read(apiClientProvider).dio.options.baseUrl;
+    final source = base.isNotEmpty
+        ? '${base.replaceAll(RegExp(r'/+$'), '')}/api/app-updates/android/download'
+        : info.apkUrl;
+
+    Future<void> run(String url) => Dio().download(
+          url,
+          path,
+          onReceiveProgress: (received, total) {
+            state = state.copyWith(
+              downloadedBytes: received,
+              totalBytes: total > 0 ? total : state.totalBytes,
+              progress: total > 0 ? received / total : state.progress,
+            );
+          },
+        );
+
+    try {
+      await run(source);
+    } catch (_) {
+      // Tracking redirect failed (API down) but Supabase may be fine → retry the
+      // absolute APK URL directly so the update can still proceed.
+      if (source == info.apkUrl) rethrow;
+      final f = File(path);
+      if (await f.exists()) await f.delete();
+      await run(info.apkUrl);
+    }
     return path;
   }
 

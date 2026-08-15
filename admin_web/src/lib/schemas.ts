@@ -33,6 +33,7 @@ export const appUpdateSchema = z.object({
   releaseNotes: z.string().nullish(),
   mandatory: z.boolean().default(true),
   releasedAtUtc: z.string().nullish(),
+  downloadCount: z.number().default(0),
 });
 
 export type AppUpdate = z.infer<typeof appUpdateSchema>;

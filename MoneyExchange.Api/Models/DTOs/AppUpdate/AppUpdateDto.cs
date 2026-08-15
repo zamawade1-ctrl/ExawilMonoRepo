@@ -22,4 +22,7 @@ public class AppUpdateDto
     public bool Mandatory { get; set; }
 
     public DateTime ReleasedAtUtc { get; set; }
+
+    /// <summary>Total APK downloads of this release via the tracking redirect.</summary>
+    public long DownloadCount { get; set; }
 }
