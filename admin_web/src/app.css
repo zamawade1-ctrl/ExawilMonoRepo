@@ -1659,19 +1659,18 @@
 }
 
 /* Post-install permission guide (install-unknown-apps + Appear-on-top paths). */
-.download-setup {
-  text-align: left;
-  margin-top: 22px;
-  padding-top: 18px;
-  border-top: 1px solid var(--outline-variant);
-}
 .download-setup-title {
+  text-align: left;
   font-weight: 800;
   font-size: 0.95rem;
-  margin-bottom: 12px;
   color: var(--on-surface);
+  margin-top: 22px;
+  padding-top: 18px;
+  margin-bottom: 12px;
+  border-top: 1px solid var(--outline-variant);
 }
 .download-perm {
+  text-align: left;
   background: var(--surface-container);
   border-radius: var(--radius);
   padding: 14px 16px;
@@ -1748,5 +1747,51 @@
   }
   .download-path {
     font-size: 0.75rem;
+  }
+}
+
+/* Desktop / web: lay the ready-state out as three columns side by side —
+   Get the app | Allow installing | Appear on top. The section title spans the
+   two permission columns; the download column runs full-height on the left.
+   Below this breakpoint the page stays a single stacked column (mobile view). */
+@media (min-width: 900px) {
+  .download-card {
+    max-width: 1040px;
+    padding: 40px;
+  }
+  .download-body {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr 1fr;
+    grid-template-areas:
+      'get title title'
+      'get install overlay';
+    gap: 18px 30px;
+    align-items: stretch;
+    margin-top: 8px;
+  }
+  .download-col-get {
+    grid-area: get;
+    border-right: 1px solid var(--outline-variant);
+    padding-right: 30px;
+  }
+  .download-setup-title {
+    grid-area: title;
+    align-self: center;
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+  }
+  .download-perm--install {
+    grid-area: install;
+    margin-bottom: 0;
+  }
+  .download-perm--overlay {
+    grid-area: overlay;
+    margin-bottom: 0;
+  }
+  /* Even column heights so the two permission cards line up. */
+  .download-perm--install,
+  .download-perm--overlay {
+    height: 100%;
   }
 }

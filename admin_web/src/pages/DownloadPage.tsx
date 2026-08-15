@@ -78,139 +78,143 @@ export function DownloadPage() {
         )}
 
         {status === 'ready' && release && (
-          <>
-            <div className="download-version">
-              <span className="download-badge">Latest</span>
-              <span className="download-vname">Version {release.versionName}</span>
-              <span className="download-vcode">build {release.versionCode}</span>
-            </div>
-            {released && (
-              <div className="download-date">Released {released}</div>
-            )}
-
-            <div className="download-count" title="Total APK downloads">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              <span>{downloadLabel}</span>
-            </div>
-
-            {release.releaseNotes && release.releaseNotes.trim() !== '' && (
-              <div className="download-notes">
-                <div className="download-notes-title">What&apos;s new</div>
-                <p>{release.releaseNotes}</p>
+          // On desktop this becomes a 3-column grid (get · install · appear-on-top);
+          // on mobile it stays a single stacked column, unchanged from before.
+          <div className="download-body">
+            <div className="download-col-get">
+              <div className="download-version">
+                <span className="download-badge">Latest</span>
+                <span className="download-vname">
+                  Version {release.versionName}
+                </span>
+                <span className="download-vcode">build {release.versionCode}</span>
               </div>
-            )}
+              {released && (
+                <div className="download-date">Released {released}</div>
+              )}
 
-            {canDownload ? (
-              <a
-                className="download-btn"
-                href={downloadHref}
-                rel="noopener noreferrer"
-              >
-                Download / Update ({release.versionName})
-              </a>
-            ) : (
-              <div className="download-muted">
-                The download link is being prepared. Please check back shortly.
-              </div>
-            )}
-
-            <ol className="download-steps">
-              <li>Tap the button to download the APK.</li>
-              <li>Open it; if asked, allow installing apps from this source.</li>
-              <li>
-                Tap <strong>Install</strong> (or <strong>Update</strong>) — your
-                data is kept.
-              </li>
-            </ol>
-
-            <div className="download-setup">
-              <div className="download-setup-title">
-                After installing — enable these permissions
+              <div className="download-count" title="Total APK downloads">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span>{downloadLabel}</span>
               </div>
 
-              <div className="download-perm">
-                <div className="download-perm-name">
-                  1. Allow installing the app
+              {release.releaseNotes && release.releaseNotes.trim() !== '' && (
+                <div className="download-notes">
+                  <div className="download-notes-title">What&apos;s new</div>
+                  <p>{release.releaseNotes}</p>
                 </div>
-                <p className="download-perm-why">
-                  When you open the APK, Android may block it. On that prompt tap{' '}
-                  <strong>Settings</strong>, turn on{' '}
-                  <strong>Allow from this source</strong>, go back, then tap{' '}
-                  <strong>Install</strong>.
-                </p>
-                <Path
-                  label="Samsung"
-                  steps={[
-                    'Settings',
-                    'Apps',
-                    'e-Xawil',
-                    'Install unknown apps',
-                    'Allow',
-                  ]}
-                />
-              </div>
+              )}
 
-              <div className="download-perm">
-                <div className="download-perm-name">
-                  2. Appear on top{' '}
-                  <span className="download-perm-alt">
-                    (Display over other apps)
-                  </span>
+              {canDownload ? (
+                <a
+                  className="download-btn"
+                  href={downloadHref}
+                  rel="noopener noreferrer"
+                >
+                  Download / Update ({release.versionName})
+                </a>
+              ) : (
+                <div className="download-muted">
+                  The download link is being prepared. Please check back shortly.
                 </div>
-                <p className="download-perm-why">
-                  Lets e-Xawil finish forwarding money automatically, even while
-                  another app is open. Required for auto-forwarding to work
-                  reliably.
-                </p>
-                <Path
-                  label="Samsung (Galaxy)"
-                  steps={[
-                    'Settings',
-                    'Apps',
-                    'e-Xawil',
-                    '⋮ menu',
-                    'Special access',
-                    'Appear on top',
-                    'On',
-                  ]}
-                />
-                <Path
-                  label="Fastest"
-                  steps={[
-                    'Settings',
-                    'Search "Appear on top"',
-                    'e-Xawil',
-                    'On',
-                  ]}
-                />
-                <Path
-                  label="Other Android"
-                  steps={[
-                    'Settings',
-                    'Apps',
-                    'Special app access',
-                    'Display over other apps',
-                    'e-Xawil',
-                    'On',
-                  ]}
-                />
-              </div>
+              )}
+
+              <ol className="download-steps">
+                <li>Tap the button to download the APK.</li>
+                <li>Open it; if asked, allow installing apps from this source.</li>
+                <li>
+                  Tap <strong>Install</strong> (or <strong>Update</strong>) — your
+                  data is kept.
+                </li>
+              </ol>
             </div>
-          </>
+
+            <div className="download-setup-title">
+              After installing — enable these permissions
+            </div>
+
+            <div className="download-perm download-perm--install">
+              <div className="download-perm-name">
+                1. Allow installing the app
+              </div>
+              <p className="download-perm-why">
+                When you open the APK, Android may block it. On that prompt tap{' '}
+                <strong>Settings</strong>, turn on{' '}
+                <strong>Allow from this source</strong>, go back, then tap{' '}
+                <strong>Install</strong>.
+              </p>
+              <Path
+                label="Samsung"
+                steps={[
+                  'Settings',
+                  'Apps',
+                  'e-Xawil',
+                  'Install unknown apps',
+                  'Allow',
+                ]}
+              />
+            </div>
+
+            <div className="download-perm download-perm--overlay">
+              <div className="download-perm-name">
+                2. Appear on top{' '}
+                <span className="download-perm-alt">
+                  (Display over other apps)
+                </span>
+              </div>
+              <p className="download-perm-why">
+                Lets e-Xawil finish forwarding money automatically, even while
+                another app is open. Required for auto-forwarding to work
+                reliably.
+              </p>
+              <Path
+                label="Samsung (Galaxy)"
+                steps={[
+                  'Settings',
+                  'Apps',
+                  'e-Xawil',
+                  '⋮ menu',
+                  'Special access',
+                  'Appear on top',
+                  'On',
+                ]}
+              />
+              <Path
+                label="Fastest"
+                steps={[
+                  'Settings',
+                  'Search "Appear on top"',
+                  'e-Xawil',
+                  'On',
+                ]}
+              />
+              <Path
+                label="Other Android"
+                steps={[
+                  'Settings',
+                  'Apps',
+                  'Special app access',
+                  'Display over other apps',
+                  'e-Xawil',
+                  'On',
+                ]}
+              />
+            </div>
+          </div>
         )}
       </div>
       <p className="download-foot">
