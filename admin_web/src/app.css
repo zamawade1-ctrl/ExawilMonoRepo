@@ -1657,3 +1657,96 @@
   font-size: 0.8rem;
   margin: 0;
 }
+
+/* Post-install permission guide (install-unknown-apps + Appear-on-top paths). */
+.download-setup {
+  text-align: left;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--outline-variant);
+}
+.download-setup-title {
+  font-weight: 800;
+  font-size: 0.95rem;
+  margin-bottom: 12px;
+  color: var(--on-surface);
+}
+.download-perm {
+  background: var(--surface-container);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.download-perm:last-child {
+  margin-bottom: 0;
+}
+.download-perm-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--on-surface);
+  margin-bottom: 6px;
+}
+.download-perm-alt {
+  font-weight: 500;
+  color: var(--muted);
+}
+.download-perm-why {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.83rem;
+  line-height: 1.5;
+}
+.download-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 8px;
+  font-size: 0.78rem;
+}
+.download-path:last-child {
+  margin-bottom: 0;
+}
+.download-path-label {
+  font-weight: 700;
+  color: var(--primary);
+  margin-right: 2px;
+}
+.download-path-frag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.download-path-step {
+  background: var(--surface);
+  border: 1px solid var(--outline-variant);
+  border-radius: 6px;
+  padding: 2px 7px;
+  color: var(--on-surface);
+}
+.download-path-sep {
+  color: var(--muted);
+}
+
+/* Responsive: tighten the card on small phones so nothing overflows. */
+@media (max-width: 480px) {
+  .download {
+    padding: 16px 12px;
+  }
+  .download-card {
+    padding: 24px 18px;
+  }
+  .download-title {
+    font-size: 1.4rem;
+  }
+  .download-btn {
+    padding: 14px 16px;
+    font-size: 0.95rem;
+  }
+  .download-perm {
+    padding: 12px 13px;
+  }
+  .download-path {
+    font-size: 0.75rem;
+  }
+}

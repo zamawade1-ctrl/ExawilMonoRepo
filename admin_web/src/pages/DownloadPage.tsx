@@ -136,12 +136,105 @@ export function DownloadPage() {
                 data is kept.
               </li>
             </ol>
+
+            <div className="download-setup">
+              <div className="download-setup-title">
+                After installing — enable these permissions
+              </div>
+
+              <div className="download-perm">
+                <div className="download-perm-name">
+                  1. Allow installing the app
+                </div>
+                <p className="download-perm-why">
+                  When you open the APK, Android may block it. On that prompt tap{' '}
+                  <strong>Settings</strong>, turn on{' '}
+                  <strong>Allow from this source</strong>, go back, then tap{' '}
+                  <strong>Install</strong>.
+                </p>
+                <Path
+                  label="Samsung"
+                  steps={[
+                    'Settings',
+                    'Apps',
+                    'e-Xawil',
+                    'Install unknown apps',
+                    'Allow',
+                  ]}
+                />
+              </div>
+
+              <div className="download-perm">
+                <div className="download-perm-name">
+                  2. Appear on top{' '}
+                  <span className="download-perm-alt">
+                    (Display over other apps)
+                  </span>
+                </div>
+                <p className="download-perm-why">
+                  Lets e-Xawil finish forwarding money automatically, even while
+                  another app is open. Required for auto-forwarding to work
+                  reliably.
+                </p>
+                <Path
+                  label="Samsung (Galaxy)"
+                  steps={[
+                    'Settings',
+                    'Apps',
+                    'e-Xawil',
+                    '⋮ menu',
+                    'Special access',
+                    'Appear on top',
+                    'On',
+                  ]}
+                />
+                <Path
+                  label="Fastest"
+                  steps={[
+                    'Settings',
+                    'Search "Appear on top"',
+                    'e-Xawil',
+                    'On',
+                  ]}
+                />
+                <Path
+                  label="Other Android"
+                  steps={[
+                    'Settings',
+                    'Apps',
+                    'Special app access',
+                    'Display over other apps',
+                    'e-Xawil',
+                    'On',
+                  ]}
+                />
+              </div>
+            </div>
           </>
         )}
       </div>
       <p className="download-foot">
         Installs over the existing app as an update — no uninstall needed.
       </p>
+    </div>
+  );
+}
+
+/**
+ * One tap-path rendered as wrap-friendly breadcrumb chips, e.g.
+ * `Samsung: Settings › Apps › e-Xawil › …`. The chips wrap on narrow phones so
+ * the guide stays readable on any screen width.
+ */
+function Path({ label, steps }: { label: string; steps: string[] }) {
+  return (
+    <div className="download-path">
+      <span className="download-path-label">{label}</span>
+      {steps.map((step, i) => (
+        <span className="download-path-frag" key={`${label}-${i}`}>
+          {i > 0 && <span className="download-path-sep">›</span>}
+          <span className="download-path-step">{step}</span>
+        </span>
+      ))}
     </div>
   );
 }
