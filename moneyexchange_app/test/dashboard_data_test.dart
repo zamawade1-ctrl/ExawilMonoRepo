@@ -76,6 +76,64 @@ void main() {
     expect(data.todayForwarded, 5);
   });
 
+  test('duplicate received whose forward failed does not inflate Received', () {
+    // Zaad re-delivered the same $10 exchange: the real one forwarded, the
+    // duplicate failed. Received must match Forwarded ($10), not $20.
+    final txns = [
+      rx(10, DateTime(2026, 8, 9, 11, 6)), // duplicate re-delivery
+      fwd(10, DateTime(2026, 8, 9, 11, 7), method: 1, status: DeviceTxStatus.failed),
+      rx(10, DateTime(2026, 8, 9, 11, 9)), // genuine
+      fwd(10, DateTime(2026, 8, 9, 11, 9), method: 1),
+    ];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.rangeReceived, 10); // one $10 dropped
+    expect(data.rangeForwarded, 10);
+    expect(data.failedCount, 1); // still surfaced as a failed forward
+    expect(data.providers.single.total, 10);
+    expect(data.providers.single.count, 1);
+    expect(data.weeklyReceived, 10);
+  });
+
+  test('three failed duplicates make weekly Received equal Forwarded', () {
+    // Mirrors the reported device state: Forwarded correct, Received inflated by
+    // the three failed duplicate amounts (10 + 11 + 3 = 24).
+    final txns = [
+      rx(10, DateTime(2026, 8, 9, 8)),
+      fwd(10, DateTime(2026, 8, 9, 8), method: 1),
+      rx(10, DateTime(2026, 8, 9, 8, 5)),
+      fwd(10, DateTime(2026, 8, 9, 8, 6), method: 1, status: DeviceTxStatus.failed),
+      rx(11, DateTime(2026, 8, 9, 9)),
+      fwd(11, DateTime(2026, 8, 9, 9), method: 1),
+      rx(11, DateTime(2026, 8, 9, 9, 5)),
+      fwd(11, DateTime(2026, 8, 9, 9, 6), method: 1, status: DeviceTxStatus.failed),
+      rx(3, DateTime(2026, 8, 9, 10)),
+      fwd(3, DateTime(2026, 8, 9, 10), method: 1),
+      rx(3, DateTime(2026, 8, 9, 10, 5)),
+      fwd(3, DateTime(2026, 8, 9, 10, 6), method: 1, status: DeviceTxStatus.failed),
+    ];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.rangeReceived, 24); // 10 + 11 + 3, duplicates dropped
+    expect(data.rangeForwarded, 24);
+    expect(data.rangeReceived, data.rangeForwarded);
+    expect(data.failedCount, 3);
+  });
+
+  test('a genuine failed forward with no duplicate leaves Received intact', () {
+    // Only one $10 received and its single forward failed (real network failure,
+    // not a duplicate): still dropped so Received tracks Forwarded (0 here).
+    final txns = [
+      rx(10, DateTime(2026, 8, 9, 9)),
+      fwd(10, DateTime(2026, 8, 9, 9, 1), method: 1, status: DeviceTxStatus.failed),
+    ];
+    final data = computeDashboard(txns, const DashboardSelection(DashboardMode.today), now);
+
+    expect(data.rangeReceived, 0);
+    expect(data.rangeForwarded, 0);
+    expect(data.failedCount, 1);
+  });
+
   test('week has 7 daily buckets and aggregates destinations', () {
     final txns = [
       fwd(4, DateTime(2026, 8, 4), destination: 'Bank account', method: 1),

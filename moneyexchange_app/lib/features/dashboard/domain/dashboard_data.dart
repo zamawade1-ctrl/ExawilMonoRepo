@@ -169,6 +169,39 @@ int _timeBucketIndex(int hour) => (hour ~/ 6).clamp(0, 3);
 bool _countsAsForwarded(DeviceTransaction t) =>
     t.isForwarded && t.status != DeviceTxStatus.failed;
 
+/// Received events that never resulted in a successful forward, so they must not
+/// inflate the "Received" total.
+///
+/// Zaad occasionally re-delivers the same exchange (byte-identical, or the same
+/// amount minutes apart with a different ref), producing a **duplicate Received**
+/// plus a **Failed forward** — the real money already left on the genuine one, so
+/// the second forward fails. Left alone this makes Received read higher than
+/// Forwarded by exactly the failed amount. For every failed forward in the window
+/// we therefore drop one Received of the same dollar amount, so the displayed
+/// Received matches what was actually forwarded on. [txns] must already be
+/// filtered to the window being aggregated. Returns the ids to exclude.
+Set<int> _unforwardedReceivedIds(List<DeviceTransaction> txns) {
+  final failedByCents = <int, int>{};
+  for (final t in txns) {
+    if (t.isForwarded && t.status == DeviceTxStatus.failed) {
+      final cents = (t.amountUsd * 100).round();
+      failedByCents[cents] = (failedByCents[cents] ?? 0) + 1;
+    }
+  }
+  final excluded = <int>{};
+  if (failedByCents.isEmpty) return excluded;
+  for (final t in txns) {
+    if (!t.isReceived) continue;
+    final cents = (t.amountUsd * 100).round();
+    final remaining = failedByCents[cents] ?? 0;
+    if (remaining > 0) {
+      failedByCents[cents] = remaining - 1;
+      excluded.add(t.id);
+    }
+  }
+  return excluded;
+}
+
 /// Pure aggregation of the raw ledger into the dashboard view model. Buckets by
 /// local calendar day; the selected range drives the grouped bar chart while the
 /// weekly summary always covers the last 7 days. `now` is injected for testability.
@@ -225,11 +258,16 @@ DashboardData computeDashboard(
   final tod = <double>[0, 0, 0, 0];
   final todCounts = <int>[0, 0, 0, 0];
 
-  for (final t in txns) {
+  // Received events whose forward failed (duplicate re-deliveries) don't count as
+  // received — see [_unforwardedReceivedIds].
+  final rangeTxns = [for (final t in txns) if (inRange(t.timestamp.toLocal())) t];
+  final excludedReceived = _unforwardedReceivedIds(rangeTxns);
+
+  for (final t in rangeTxns) {
     final local = t.timestamp.toLocal();
-    if (!inRange(local)) continue;
     final key = _startOfDay(local);
     if (t.isReceived) {
+      if (excludedReceived.contains(t.id)) continue;
       received[key] = (received[key] ?? 0) + t.amountUsd;
       rangeReceived += t.amountUsd;
       final p = (t.provider == null || t.provider!.isEmpty) ? 'Other' : t.provider!;
@@ -315,13 +353,15 @@ DashboardData computeDashboard(
   final weekForwarded = <DateTime, double>{};
   var weeklyForwarded = 0.0;
   var weeklyReceived = 0.0;
-  for (final t in txns) {
+  final weekEnd = today.add(const Duration(days: 1));
+  bool inWeek(DateTime local) => !local.isBefore(weekStart) && local.isBefore(weekEnd);
+  final weekTxns = [for (final t in txns) if (inWeek(t.timestamp.toLocal())) t];
+  final excludedWeekReceived = _unforwardedReceivedIds(weekTxns);
+  for (final t in weekTxns) {
     final local = t.timestamp.toLocal();
-    if (local.isBefore(weekStart) || !local.isBefore(today.add(const Duration(days: 1)))) {
-      continue;
-    }
     final key = _startOfDay(local);
     if (t.isReceived) {
+      if (excludedWeekReceived.contains(t.id)) continue;
       weekReceived[key] = (weekReceived[key] ?? 0) + t.amountUsd;
       weeklyReceived += t.amountUsd;
     } else if (_countsAsForwarded(t)) {
