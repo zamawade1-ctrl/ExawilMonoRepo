@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../accessibility/presentation/accessibility_guide_dialog.dart';
+import '../../accessibility/presentation/overlay_guide_dialog.dart';
 import '../../forwarding/data/forwarding_channel.dart';
 import '../../forwarding/presentation/forwarding_providers.dart';
 import '../../home/presentation/home_shell.dart';
@@ -53,9 +54,13 @@ class _HomeGateState extends ConsumerState<HomeGate> {
   ///   2. Then, if the auto-type PIN accessibility service isn't on, ask the
   ///      user to enable it via the [AccessibilityGuideDialog] and open the
   ///      Accessibility settings on accept.
+  ///   3. Finally, if the "display over other apps" overlay isn't granted (also
+  ///      Settings-only — the forwarder draws the USSD auto-fill overlay on top
+  ///      of the dialer), ask via the [OverlayGuideDialog] and open the overlay
+  ///      settings on accept.
   /// A returning user who's already granted everything is never prompted.
-  /// Best-effort: any failure is swallowed; the same dialog is re-shown on the
-  /// next entry to the home shell while the service is still off.
+  /// Best-effort: any failure is swallowed; the same dialogs are re-shown on the
+  /// next entry to the home shell while a permission is still off.
   Future<void> _runFirstRunSetup() async {
     try {
       var status = await _channel.getStatus();
@@ -76,9 +81,20 @@ class _HomeGateState extends ConsumerState<HomeGate> {
           await _channel.openAccessibilitySettings();
         }
       }
+      if (!mounted) return;
+
+      // Then the "display over other apps" overlay — same Settings-only nature,
+      // and just as required for the forwarder to run. Re-read the status first
+      // so a user who just granted it isn't asked again.
+      status = await _channel.getStatus();
+      if (!status.overlayEnabled && mounted) {
+        if (await showOverlayGuide(context)) {
+          await _channel.openOverlaySettings();
+        }
+      }
     } on PlatformException {
-      // Ignore — the guide dialog is re-shown on the next entry to the home
-      // shell while the accessibility service is still off.
+      // Ignore — the guide dialogs are re-shown on the next entry to the home
+      // shell while a permission is still off.
     }
   }
 

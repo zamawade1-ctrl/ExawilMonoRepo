@@ -32,10 +32,16 @@ class SimCard {
   final String carrierName;
   final String? number;
 
-  /// A human label like "SIM 1 · Somtel" for the dropdown.
+  /// A human label like "SIM 1 · Somtel" for the dropdown. The carrier is only
+  /// appended when it adds information — if the SIM's display name is already the
+  /// carrier (common: both read "Telesom"), it's shown once, not "Telesom · Telesom".
   String get label {
-    final carrier = carrierName.isNotEmpty ? ' · $carrierName' : '';
-    return '$displayName$carrier';
+    final name = displayName.trim();
+    final carrier = carrierName.trim();
+    if (carrier.isEmpty || carrier.toLowerCase() == name.toLowerCase()) {
+      return name.isNotEmpty ? name : carrier;
+    }
+    return name.isNotEmpty ? '$name · $carrier' : carrier;
   }
 
   static SimCard fromMap(Map<Object?, Object?> map) => SimCard(

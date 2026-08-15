@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
+import android.telephony.SubscriptionInfo
 import android.telephony.SubscriptionManager
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -36,9 +37,10 @@ object SimCards {
                 mapOf(
                     "subscriptionId" to info.subscriptionId,
                     "slotIndex" to info.simSlotIndex,
-                    "displayName" to (info.displayName?.toString() ?: "SIM ${info.simSlotIndex + 1}"),
+                    "displayName" to (info.displayName?.toString()?.takeIf { it.isNotBlank() }
+                        ?: "SIM ${info.simSlotIndex + 1}"),
                     "carrierName" to (info.carrierName?.toString() ?: ""),
-                    "number" to (info.number?.takeIf { it.isNotBlank() }),
+                    "number" to numberFor(context, sm, info),
                 )
             }
         } catch (e: SecurityException) {
@@ -48,6 +50,34 @@ object SimCards {
             Log.e(TAG, "Failed to read SIM list", e)
             emptyList()
         }
+    }
+
+    /**
+     * The SIM's own MSISDN, best-effort. On Android 13+ [SubscriptionManager.getPhoneNumber]
+     * pulls it from several sources (SIM, carrier config, IMS) and is far more likely to
+     * return a value than the long-deprecated [SubscriptionInfo.getNumber] — but it needs
+     * READ_PHONE_NUMBERS, so we only try it when that's granted, then fall back to the legacy
+     * field. Returns null when no source has the number (many carriers never provision it).
+     */
+    private fun numberFor(
+        context: Context,
+        sm: SubscriptionManager,
+        info: SubscriptionInfo,
+    ): String? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            hasPhoneNumbersPermission(context)
+        ) {
+            try {
+                val n = sm.getPhoneNumber(info.subscriptionId)
+                if (n.isNotBlank()) return n.trim()
+            } catch (e: SecurityException) {
+                Log.w(TAG, "No permission to read SIM phone number", e)
+            } catch (e: Exception) {
+                Log.w(TAG, "getPhoneNumber failed", e)
+            }
+        }
+        @Suppress("DEPRECATION", "MissingPermission")
+        return info.number?.trim()?.takeIf { it.isNotBlank() }
     }
 
     /**
@@ -87,5 +117,9 @@ object SimCards {
 
     private fun hasPhoneStatePermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasPhoneNumbersPermission(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_NUMBERS) ==
             PackageManager.PERMISSION_GRANTED
 }

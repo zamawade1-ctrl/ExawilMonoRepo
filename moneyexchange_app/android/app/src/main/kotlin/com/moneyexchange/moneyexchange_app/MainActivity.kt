@@ -129,6 +129,8 @@ class MainActivity : FlutterFragmentActivity() {
                                 Manifest.permission.RECEIVE_SMS,
                                 Manifest.permission.CALL_PHONE,
                                 Manifest.permission.READ_PHONE_STATE,
+                                // Reads each SIM's own number for the SIM picker.
+                                Manifest.permission.READ_PHONE_NUMBERS,
                             ),
                             REQ_PERMISSIONS,
                         )
