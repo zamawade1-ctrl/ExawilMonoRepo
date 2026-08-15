@@ -29,7 +29,7 @@ class BillingScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 20),
-          for (final plan in BillingInfo.plans) ...[
+          for (final plan in BillingInfo.customerPlans) ...[
             _PlanCard(plan: plan),
             const SizedBox(height: 12),
           ],

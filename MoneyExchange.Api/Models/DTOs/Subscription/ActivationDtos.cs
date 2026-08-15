@@ -35,6 +35,13 @@ public class GenerateActivationCodesDto
     public int? Count { get; set; }
 
     /// <summary>
+    /// USD price of the plan these code(s) represent, recorded for the admin billing view. Lets two
+    /// plans of the same duration (the $10 and $5 one-month plans) be told apart, and a free plan be
+    /// priced at 0. Null = unpriced (admin billing falls back to the duration-derived price).
+    /// </summary>
+    public int? PriceUsd { get; set; }
+
+    /// <summary>
     /// When true, mint a never-expiring "Forever" plan code — overrides the duration fields with
     /// <c>PlanKinds.ForeverMinutes</c> so redemption sets the plan ~4000 years out.
     /// </summary>

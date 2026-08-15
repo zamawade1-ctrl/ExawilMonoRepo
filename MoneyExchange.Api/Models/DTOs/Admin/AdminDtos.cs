@@ -73,6 +73,13 @@ public class AdminUserDto
     /// <summary>The paid-plan kind label ("1 month", "6 months", "1 year", "Forever"), or null if never paid.</summary>
     public string? PlanKind { get; set; }
 
+    /// <summary>
+    /// USD price of the plan the user redeemed, for the admin billing view. Distinguishes the $10 and
+    /// $5 one-month plans that share a duration, and a $0 free plan. Null = unpriced/legacy (the admin
+    /// UI falls back to the duration-derived price).
+    /// </summary>
+    public int? PlanPriceUsd { get; set; }
+
     /// <summary>When the current paid (Pro) period began, or null if the user has never paid. For the admin billing view.</summary>
     public DateTime? PlanStartedAtUtc { get; set; }
 

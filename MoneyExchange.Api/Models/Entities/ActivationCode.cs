@@ -20,6 +20,14 @@ public class ActivationCode
     public int DurationDays { get; set; } = 30;
 
     /// <summary>
+    /// USD price of the plan this code represents, recorded so the admin billing view can show the
+    /// exact amount even when two plans share a duration (e.g. the $10 and $5 one-month plans). Copied
+    /// onto <see cref="User.PlanPriceUsd"/> on redeem. Null = unpriced/legacy (admin billing then falls
+    /// back to the duration-derived price); 0 = an explicit free plan (e.g. free-unlimited).
+    /// </summary>
+    public int? PriceUsd { get; set; }
+
+    /// <summary>
     /// How many <b>minutes</b> of Pro access this code grants — the precise unit the admin sets (so a
     /// 2-minute test code is possible). When &gt; 0 it takes precedence over <see cref="DurationDays"/>
     /// on redeem; 0 means "fall back to DurationDays" (for older codes minted before this field).

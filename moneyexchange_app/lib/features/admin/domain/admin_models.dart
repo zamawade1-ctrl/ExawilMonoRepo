@@ -13,6 +13,7 @@ class AdminUser {
     required this.lastLoginAtUtc,
     required this.lastModifiedAtUtc,
     required this.planKind,
+    this.planPriceUsd,
     required this.plan,
     this.latestCodeGeneratedAtUtc,
     this.latestCodeRedeemed = false,
@@ -29,6 +30,12 @@ class AdminUser {
   final DateTime lastLoginAtUtc;
   final DateTime lastModifiedAtUtc;
   final String? planKind;
+
+  /// USD price of the plan the user redeemed, for the admin billing view. Tells the
+  /// $10 and $5 one-month plans apart, and marks a $0 free plan. Null = unpriced/legacy
+  /// (the admin billing falls back to the duration-derived price).
+  final int? planPriceUsd;
+
   final PlanSnapshot plan;
 
   /// When the most recent activation code was generated for this account (null if none ever was).
@@ -59,6 +66,7 @@ class AdminUser {
         ? DateTime.parse(json['createdAtUtc'] as String).toUtc()
         : DateTime.parse(json['lastModifiedAtUtc'] as String).toUtc(),
     planKind: json['planKind'] as String?,
+    planPriceUsd: (json['planPriceUsd'] as num?)?.toInt(),
     plan: PlanSnapshot.fromJson(json['plan'] as Map<String, dynamic>),
     latestCodeGeneratedAtUtc: _parseUtc(json['latestCodeGeneratedAtUtc']),
     latestCodeRedeemed: json['latestCodeRedeemed'] as bool? ?? false,

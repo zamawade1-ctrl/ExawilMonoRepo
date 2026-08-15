@@ -144,6 +144,9 @@ public class SubscriptionRepository : ISubscriptionRepository
                 user.PlanStartedAtUtc = now;
             // Record the granted duration (drives the admin "plan kind" label) and mark as edited.
             user.PlanDurationMinutes = grantMinutes;
+            // Carry the code's price so the admin billing view shows the exact amount (distinguishes the
+            // $10 vs $5 one-month plans, and a $0 free plan). Null on a legacy/unpriced code.
+            user.PlanPriceUsd = activation.PriceUsd;
             user.LastModifiedAtUtc = now;
 
             activation.IsRedeemed = true;

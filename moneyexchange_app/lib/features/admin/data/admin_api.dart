@@ -38,6 +38,7 @@ class AdminApi {
     required int expiresInMinutes,
     bool forever = false,
     int count = 1,
+    int? priceUsd,
   }) async {
     try {
       final response = await _dio.post<Map<String, dynamic>>(
@@ -48,6 +49,8 @@ class AdminApi {
           'expiresInMinutes': expiresInMinutes,
           'forever': forever,
           'count': count,
+          // Admin billing amount for this plan; omitted (null) = unpriced.
+          'priceUsd': ?priceUsd,
         },
       );
       final list = (response.data!['data'] as List).cast<Map<String, dynamic>>();

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/config/billing_info.dart';
 import '../../../core/routing/app_router.dart';
 import '../../../core/theme/theme_mode_controller.dart';
 import '../../auth/presentation/auth_providers.dart';
@@ -27,7 +28,8 @@ String _fmtDateTime(DateTime utc) {
   return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
 }
 
-/// USD price a plan-kind label maps to (1 month $10, 1 year $60, Forever $200).
+/// Fallback USD price a plan-kind label maps to (1 month $10, 1 year $60, Forever
+/// $200), used only for legacy users redeemed before per-code prices were stored.
 int? _planPrice(String? planKind) {
   switch ((planKind ?? '').toLowerCase()) {
     case '1 month':
@@ -40,6 +42,11 @@ int? _planPrice(String? planKind) {
       return null;
   }
 }
+
+/// The exact USD amount a customer paid: the price stored with the code they
+/// redeemed (tells the $10 and $5 one-month plans apart, and $0 for a free plan),
+/// falling back to the duration-derived price for legacy pre-price redemptions.
+int? _priceForUser(AdminUser u) => u.planPriceUsd ?? _planPrice(u.planKind);
 
 /// The admin console: a two-tab shell (Overview + Users) with a bottom nav, an
 /// app-bar menu (settings / dark mode / log out), and full user management —
@@ -593,9 +600,15 @@ class _UserCard extends ConsumerWidget {
   }
 
   void _openActions(BuildContext context, WidgetRef ref) {
+    // Pass THIS card's context + ref into the sheet. The sheet pops itself before
+    // running an action, which deactivates the sheet's own context — so every
+    // dialog/snackbar/API call afterward must use the card's context + ref (still
+    // mounted behind the sheet), not the sheet's. Using the sheet's context here
+    // was the bug that made Reset device / Expire / Reset password / Edit phone
+    // silently throw and do nothing.
     showModalBottomSheet<void>(
       context: context,
-      builder: (_) => _ActionsSheet(user: user),
+      builder: (_) => _ActionsSheet(user: user, parentContext: context, parentRef: ref),
     );
   }
 }
@@ -622,12 +635,24 @@ class _MetaChip extends StatelessWidget {
 }
 
 /// Bottom sheet of per-user actions.
-class _ActionsSheet extends ConsumerWidget {
-  const _ActionsSheet({required this.user});
+///
+/// [parentContext] / [parentRef] belong to the [_UserCard] that opened this sheet
+/// and stay mounted while (and after) the sheet is dismissed. Every action pops
+/// the sheet with the sheet's OWN [context] (valid at tap time), then hands the
+/// parent context + ref to the helper so the follow-up dialog, snackbar and API
+/// call don't run on the sheet's deactivated context.
+class _ActionsSheet extends StatelessWidget {
+  const _ActionsSheet({
+    required this.user,
+    required this.parentContext,
+    required this.parentRef,
+  });
   final AdminUser user;
+  final BuildContext parentContext;
+  final WidgetRef parentRef;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final phone = user.phone ?? '';
     return SafeArea(
       child: Column(
@@ -644,36 +669,36 @@ class _ActionsSheet extends ConsumerWidget {
             title: const Text('Generate code'),
             onTap: () {
               Navigator.pop(context);
-              Navigator.of(context).push(MaterialPageRoute<void>(
+              Navigator.of(parentContext).push(MaterialPageRoute<void>(
                 builder: (_) => GenerateCodeScreen(initialPhone: phone),
               ));
-              ref.invalidate(adminUsersProvider);
+              parentRef.invalidate(adminUsersProvider);
             },
           ),
           ListTile(
             leading: const Icon(Icons.phone_outlined),
             title: const Text('Edit phone number'),
-            onTap: () async {
+            onTap: () {
               Navigator.pop(context);
-              await _editPhone(context, ref, user);
+              _editPhone(parentContext, parentRef, user);
             },
           ),
           ListTile(
             leading: const Icon(Icons.password),
             title: const Text('Reset password'),
-            onTap: () async {
+            onTap: () {
               Navigator.pop(context);
-              await _resetPassword(context, ref, user);
+              _resetPassword(parentContext, parentRef, user);
             },
           ),
           ListTile(
             leading: const Icon(Icons.smartphone),
             title: const Text('Reset device'),
-            onTap: () async {
+            onTap: () {
               Navigator.pop(context);
-              await _confirmDo(context, ref, 'Reset device?',
+              _confirmDo(parentContext, parentRef, 'Reset device?',
                   'Clear ${user.fullName}\'s device binding?',
-                  () => ref.read(adminApiProvider).resetDevice(phone: phone),
+                  () => parentRef.read(adminApiProvider).resetDevice(phone: phone),
                   'Device binding cleared.');
             },
           ),
@@ -681,11 +706,11 @@ class _ActionsSheet extends ConsumerWidget {
             leading: Icon(Icons.timer_off_outlined, color: Theme.of(context).colorScheme.error),
             title: Text('Expire plan now',
                 style: TextStyle(color: Theme.of(context).colorScheme.error)),
-            onTap: () async {
+            onTap: () {
               Navigator.pop(context);
-              await _confirmDo(context, ref, 'Expire plan?',
+              _confirmDo(parentContext, parentRef, 'Expire plan?',
                   'Force ${user.fullName}\'s plan to expire now?',
-                  () => ref.read(adminApiProvider).expirePlan(phone: phone),
+                  () => parentRef.read(adminApiProvider).expirePlan(phone: phone),
                   'Plan expired.');
             },
           ),
@@ -708,16 +733,16 @@ Future<void> _confirmDo(
 ) async {
   final ok = await showDialog<bool>(
     context: context,
-    builder: (_) => AlertDialog(
+    builder: (dialogCtx) => AlertDialog(
       title: Text(title),
       content: Text(body),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Confirm')),
+        TextButton(onPressed: () => Navigator.pop(dialogCtx, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(dialogCtx, true), child: const Text('Confirm')),
       ],
     ),
   );
-  if (ok != true) return;
+  if (ok != true || !context.mounted) return;
   await _run(context, ref, op, okMsg);
 }
 
@@ -725,7 +750,7 @@ Future<void> _editPhone(BuildContext context, WidgetRef ref, AdminUser user) asy
   final controller = TextEditingController(text: user.phone ?? '');
   final newPhone = await showDialog<String>(
     context: context,
-    builder: (_) => AlertDialog(
+    builder: (dialogCtx) => AlertDialog(
       title: Text('Edit ${user.fullName}\'s phone'),
       content: TextField(
         controller: controller,
@@ -738,9 +763,9 @@ Future<void> _editPhone(BuildContext context, WidgetRef ref, AdminUser user) asy
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('Cancel')),
         FilledButton(
-          onPressed: () => Navigator.pop(context, controller.text.trim()),
+          onPressed: () => Navigator.pop(dialogCtx, controller.text.trim()),
           child: const Text('Update'),
         ),
       ],
@@ -756,7 +781,7 @@ Future<void> _resetPassword(BuildContext context, WidgetRef ref, AdminUser user)
   final controller = TextEditingController();
   final pw = await showDialog<String>(
     context: context,
-    builder: (_) => AlertDialog(
+    builder: (dialogCtx) => AlertDialog(
       title: Text('Reset ${user.fullName}\'s password'),
       content: TextField(
         controller: controller,
@@ -768,9 +793,9 @@ Future<void> _resetPassword(BuildContext context, WidgetRef ref, AdminUser user)
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('Cancel')),
         FilledButton(
-          onPressed: () => Navigator.pop(context, controller.text.trim()),
+          onPressed: () => Navigator.pop(dialogCtx, controller.text.trim()),
           child: const Text('Set password'),
         ),
       ],
@@ -819,7 +844,7 @@ class _BillingTab extends ConsumerWidget {
         final paid = users.where((u) => !u.isAdmin && u.planKind != null).toList()
           ..sort((a, b) => (b.plan.periodStartUtc ?? b.lastModifiedAtUtc)
               .compareTo(a.plan.periodStartUtc ?? a.lastModifiedAtUtc));
-        final total = paid.fold<int>(0, (sum, u) => sum + (_planPrice(u.planKind) ?? 0));
+        final total = paid.fold<int>(0, (sum, u) => sum + (_priceForUser(u) ?? 0));
 
         return RefreshIndicator(
           onRefresh: () async => ref.invalidate(adminUsersProvider),
@@ -833,7 +858,11 @@ class _BillingTab extends ConsumerWidget {
                   Expanded(child: _BillingStat(label: 'Total collected', value: '\$$total')),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 20),
+              const _PlansCatalog(),
+              const SizedBox(height: 20),
+              Text('Payments', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 8),
               if (paid.isEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 40),
@@ -845,13 +874,75 @@ class _BillingTab extends ConsumerWidget {
                 )
               else
                 for (final u in paid) ...[
-                  _BillingRow(user: u, price: _planPrice(u.planKind)),
+                  _BillingRow(user: u, price: _priceForUser(u)),
                   const SizedBox(height: 10),
                 ],
             ],
           ),
         );
       },
+    );
+  }
+}
+
+/// The full plan catalog on the admin billing tab — every plan, including the
+/// admin-only ones (the discounted $5 monthly, free-unlimited) that never show on
+/// the customer pricing page. Gives the admin the price sheet at a glance.
+class _PlansCatalog extends StatelessWidget {
+  const _PlansCatalog();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Plans', style: theme.textTheme.titleMedium),
+        const SizedBox(height: 8),
+        Card(
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              children: [
+                for (final p in BillingInfo.plans)
+                  ListTile(
+                    dense: true,
+                    title: Row(
+                      children: [
+                        Flexible(
+                          child: Text('${p.name} · ${p.period}',
+                              style: theme.textTheme.bodyMedium
+                                  ?.copyWith(fontWeight: FontWeight.w600)),
+                        ),
+                        if (!p.visibleToCustomers) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.tertiary.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text('ADMIN ONLY',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.tertiary,
+                                  fontWeight: FontWeight.w800,
+                                )),
+                          ),
+                        ],
+                      ],
+                    ),
+                    trailing: Text('\$${p.priceUsd}',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          color: _adminAccent,
+                        )),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

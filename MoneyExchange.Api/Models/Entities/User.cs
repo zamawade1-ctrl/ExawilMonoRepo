@@ -68,6 +68,14 @@ public class User
     public int? PlanDurationMinutes { get; set; }
 
     /// <summary>
+    /// USD price of the plan the user most recently redeemed (copied from the redeemed code's
+    /// <see cref="ActivationCode.PriceUsd"/>), so the admin billing view shows the exact amount even
+    /// when two plans share a duration (the $10 vs $5 one-month plans). Null = unpriced/legacy (admin
+    /// billing falls back to the duration-derived price); 0 = an explicit free plan.
+    /// </summary>
+    public int? PlanPriceUsd { get; set; }
+
+    /// <summary>
     /// When this account was last mutated by an admin action (device/password reset, plan change,
     /// phone edit) or a plan redemption. Drives the admin list's "most-recently-edited first"
     /// ordering. Null for accounts untouched since before this field existed (falls back to

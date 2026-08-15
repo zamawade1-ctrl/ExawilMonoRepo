@@ -54,6 +54,9 @@ namespace MoneyExchange.Api.Migrations
                     b.Property<bool>("IsRedeemed")
                         .HasColumnType("boolean");
 
+                    b.Property<int?>("PriceUsd")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime?>("RedeemedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -351,6 +354,9 @@ namespace MoneyExchange.Api.Migrations
 
                     b.Property<DateTime?>("PlanPaidUntilUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("PlanPriceUsd")
+                        .HasColumnType("integer");
 
                     b.Property<DateTime?>("PlanStartedAtUtc")
                         .HasColumnType("timestamp with time zone");

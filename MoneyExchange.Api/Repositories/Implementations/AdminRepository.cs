@@ -82,6 +82,7 @@ public class AdminRepository : IAdminRepository
                     Code = raw,
                     DurationMinutes = durationMinutes,
                     DurationDays = durationMinutes / (24 * 60),   // whole-day count, for display only
+                    PriceUsd = dto.PriceUsd,   // admin billing amount; null = unpriced, 0 = free plan
                     AssignedToPhone = assigned,
                     ExpiresAtUtc = expiresAt,
                     CreatedAtUtc = now
@@ -288,6 +289,7 @@ public class AdminRepository : IAdminRepository
                     LastLoginAtUtc = u.LastLoginAtUtc,
                     LastModifiedAtUtc = u.LastModifiedAtUtc ?? u.CreatedAt,
                     PlanKind = PlanKinds.Label(u.PlanDurationMinutes),
+                    PlanPriceUsd = u.PlanPriceUsd,
                     PlanStartedAtUtc = u.PlanStartedAtUtc,
                     Plan = _planCalculator.Snapshot(u),
                     LatestCodeGeneratedAtUtc = code?.CreatedAtUtc,

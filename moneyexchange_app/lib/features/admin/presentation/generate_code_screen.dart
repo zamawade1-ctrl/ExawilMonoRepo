@@ -7,25 +7,42 @@ import '../data/admin_api.dart';
 import '../domain/admin_models.dart';
 import 'admin_providers.dart';
 
-/// The plan kinds an admin can grant. "Forever" is a backend sentinel (never
-/// expires); "custom" reveals the days/hours/minutes steppers.
-enum _PlanKind { month, sixMonths, year, forever, custom }
+/// The plan kinds an admin can grant. "Forever" and "Free unlimited" are both the
+/// backend never-expires sentinel (they differ only in price — $200 vs $0);
+/// "custom" reveals the days/hours/minutes steppers.
+enum _PlanKind { month, month5, sixMonths, year, forever, freeUnlimited, custom }
 
 extension on _PlanKind {
   String get label => switch (this) {
-    _PlanKind.month => '1 month',
+    _PlanKind.month => '1 month · \$10',
+    _PlanKind.month5 => '1 month · \$5',
     _PlanKind.sixMonths => '6 months',
-    _PlanKind.year => '1 year',
-    _PlanKind.forever => 'Forever',
+    _PlanKind.year => '1 year · \$60',
+    _PlanKind.forever => 'Forever · \$200',
+    _PlanKind.freeUnlimited => 'Free unlimited',
     _PlanKind.custom => 'Custom',
   };
 
-  /// Duration in minutes for the fixed kinds (custom/forever handled separately).
+  /// Duration in minutes for the fixed kinds (custom + the forever kinds handled separately).
   int get minutes => switch (this) {
-    _PlanKind.month => 30 * 1440,
+    _PlanKind.month || _PlanKind.month5 => 30 * 1440,
     _PlanKind.sixMonths => 182 * 1440,
     _PlanKind.year => 365 * 1440,
     _ => 0,
+  };
+
+  /// Both "Forever" and "Free unlimited" mint a never-expiring code.
+  bool get isForever => this == _PlanKind.forever || this == _PlanKind.freeUnlimited;
+
+  /// USD price recorded for the admin billing view. Null = unpriced (6 months / custom):
+  /// the admin billing falls back to the duration-derived price.
+  int? get priceUsd => switch (this) {
+    _PlanKind.month => 10,
+    _PlanKind.month5 => 5,
+    _PlanKind.year => 60,
+    _PlanKind.forever => 200,
+    _PlanKind.freeUnlimited => 0,
+    _PlanKind.sixMonths || _PlanKind.custom => null,
   };
 }
 
@@ -80,7 +97,7 @@ class _GenerateCodeScreenState extends ConsumerState<GenerateCodeScreen> {
       setState(() => _error = 'Enter the customer\'s phone number.');
       return;
     }
-    final forever = _kind == _PlanKind.forever;
+    final forever = _kind.isForever;
     final durationMinutes = _kind == _PlanKind.custom ? _customMinutes : _kind.minutes;
     if (!forever && durationMinutes <= 0) {
       setState(() => _error = 'Duration must be greater than zero.');
@@ -98,6 +115,7 @@ class _GenerateCodeScreenState extends ConsumerState<GenerateCodeScreen> {
             expiresInMinutes: _expiryMinutes,
             forever: forever,
             count: _count,
+            priceUsd: _kind.priceUsd,
           );
       setState(() => _results = codes);
     } on AdminException catch (e) {
