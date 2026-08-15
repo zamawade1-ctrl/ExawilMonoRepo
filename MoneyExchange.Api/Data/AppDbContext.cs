@@ -21,6 +21,8 @@ public class AppDbContext : DbContext
 
     public DbSet<ActivationCode> ActivationCodes => Set<ActivationCode>();
 
+    public DbSet<AppVersion> AppVersions => Set<AppVersion>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ExchangeTransaction>(entity =>
@@ -80,6 +82,13 @@ public class AppDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(e => e.CustomerId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<AppVersion>(entity =>
+        {
+            // The active-release lookup filters by platform + IsActive, then takes the
+            // highest versionCode — index the first two to keep it a cheap point lookup.
+            entity.HasIndex(e => new { e.Platform, e.IsActive });
         });
     }
 }

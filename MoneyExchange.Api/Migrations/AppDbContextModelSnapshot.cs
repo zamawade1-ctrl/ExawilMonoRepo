@@ -68,6 +68,51 @@ namespace MoneyExchange.Api.Migrations
                     b.ToTable("ActivationCodes");
                 });
 
+            modelBuilder.Entity("MoneyExchange.Api.Models.Entities.AppVersion", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ApkUrl")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("Mandatory")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("ReleaseNotes")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ReleasedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("VersionCode")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("VersionName")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Platform", "IsActive");
+
+                    b.ToTable("AppVersions");
+                });
+
             modelBuilder.Entity("MoneyExchange.Api.Models.Entities.Customer", b =>
                 {
                     b.Property<int>("Id")

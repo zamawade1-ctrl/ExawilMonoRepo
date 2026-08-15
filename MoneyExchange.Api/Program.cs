@@ -50,6 +50,7 @@ builder.Services.AddScoped<IUserAuthRepository, UserAuthRepository>();
 builder.Services.AddScoped<IPinRepository, PinRepository>();
 builder.Services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
 builder.Services.AddScoped<IAdminRepository, AdminRepository>();
+builder.Services.AddScoped<IAppUpdateRepository, AppUpdateRepository>();
 
 // --- Trial + paid-plan config and the status calculator ---
 builder.Services.Configure<SubscriptionOptions>(
@@ -162,6 +163,52 @@ using (var scope = app.Services.CreateScope())
         else
         {
             admin.Role = UserRole.Admin;   // ensure an existing account is (re)promoted to admin
+        }
+        db.SaveChanges();
+    }
+
+    // Upsert the active Android release from config so the public update feed can be
+    // managed entirely by environment variables (no code change / redeploy per release):
+    //   AppUpdate__Android__ApkUrl        (required to seed; the Supabase Storage public URL)
+    //   AppUpdate__Android__VersionCode   (the build number the app compares against)
+    //   AppUpdate__Android__VersionName / __ReleaseNotes / __Mandatory (optional)
+    // Only runs when an ApkUrl is configured, so no placeholder/fake row is ever created.
+    var androidApkUrl = builder.Configuration["AppUpdate:Android:ApkUrl"];
+    if (!string.IsNullOrWhiteSpace(androidApkUrl))
+    {
+        var versionName = builder.Configuration["AppUpdate:Android:VersionName"] ?? "1.0.1";
+        long.TryParse(builder.Configuration["AppUpdate:Android:VersionCode"], out var versionCode);
+        if (versionCode <= 0) versionCode = 1;
+        var mandatory = !bool.TryParse(builder.Configuration["AppUpdate:Android:Mandatory"], out var m) || m;
+        var releaseNotes = builder.Configuration["AppUpdate:Android:ReleaseNotes"];
+
+        // Exactly one active release per platform: deactivate the rest, upsert this one.
+        foreach (var row in db.AppVersions.Where(v => v.Platform == "android" && v.IsActive))
+            row.IsActive = false;
+
+        var existing = db.AppVersions.FirstOrDefault(
+            v => v.Platform == "android" && v.VersionCode == versionCode);
+        if (existing is null)
+        {
+            db.AppVersions.Add(new MoneyExchange.Api.Models.Entities.AppVersion
+            {
+                Platform = "android",
+                VersionName = versionName,
+                VersionCode = versionCode,
+                ApkUrl = androidApkUrl,
+                ReleaseNotes = releaseNotes,
+                Mandatory = mandatory,
+                IsActive = true,
+                ReleasedAtUtc = DateTime.UtcNow,
+            });
+        }
+        else
+        {
+            existing.IsActive = true;
+            existing.VersionName = versionName;
+            existing.ApkUrl = androidApkUrl;
+            existing.ReleaseNotes = releaseNotes;
+            existing.Mandatory = mandatory;
         }
         db.SaveChanges();
     }
