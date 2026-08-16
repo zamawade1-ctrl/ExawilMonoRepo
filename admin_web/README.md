@@ -24,6 +24,21 @@ admin_web/             ← this: React admin web console
   `ServiceResponse<T>` envelope, and signs out on 401
 - No UI framework — the theme (`src/theme/theme.css`) mirrors the Flutter `AppTheme`: white
   surfaces, a single **Leon-green** (`#2FA84F`) accent
+- **Installable PWA** — `vite-plugin-pwa` (`vite.config.ts`) generates a web manifest + a
+  Workbox service worker (`registerType: 'autoUpdate'`) that precaches the app shell so the
+  console opens instantly and works offline. `/api/*` calls are never cached — they always hit
+  the network for fresh, auth-scoped data. Icons live in `public/` (`pwa-*.png`,
+  `apple-touch-icon.png`); the status-bar `theme-color` tracks the in-app light/dark toggle.
+
+## Responsive layout
+
+The shell is fully responsive from a wide desktop down to a small phone:
+
+- **≥ 861px** — fixed brand sidebar + scrolling content (`AdminLayout` `.sidebar`).
+- **≤ 860px** — the sidebar is replaced by a native app-shell: a sticky top bar (brand +
+  account menu) and a fixed **bottom navigation bar** (Dashboard / Users / Billing / Codes),
+  with `env(safe-area-inset-*)` padding for notched / home-indicator phones. Data tables scroll
+  horizontally inside their card; the page never scrolls sideways.
 
 ## Security model
 

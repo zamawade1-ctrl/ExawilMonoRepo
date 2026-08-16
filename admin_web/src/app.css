@@ -495,6 +495,49 @@
   overflow-y: auto;
 }
 
+/* ---- Mobile chrome (top bar + bottom nav) — hidden on desktop ------------- */
+.mobile-topbar,
+.bottom-nav {
+  display: none;
+}
+.mobile-topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.mobile-topbar-brand .brand-name {
+  font-size: 1.05rem;
+}
+.mobile-account-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 50%;
+}
+.bottom-nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 2px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  border-radius: 10px;
+  transition: color 0.15s ease, background 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.bottom-nav-item .icon {
+  width: 22px;
+  height: 22px;
+}
+.bottom-nav-item-active {
+  color: var(--leon-green);
+}
+
 /* ---- Danger button ------------------------------------------------------- */
 .btn-danger {
   background: transparent;
@@ -1459,59 +1502,72 @@
   .signin-brand {
     display: none;
   }
+
+  /* Swap the desktop sidebar for a fixed top bar + bottom navigation — the
+     native app-shell layout that also reads well as an installed PWA. */
   .admin-shell {
-    grid-template-columns: 1fr;
+    display: block;
     height: auto;
     overflow: visible;
   }
   .sidebar {
-    position: static;
+    display: none;
+  }
+
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    padding: 10px 16px;
+    padding-top: calc(10px + env(safe-area-inset-top));
+    background: var(--surface);
+    border-bottom: 1px solid var(--outline-variant);
+  }
+
+  .content {
+    /* Leave room for the sticky top bar and the fixed bottom nav (incl. the
+       iOS home-indicator safe area). */
+    padding: 20px 18px calc(84px + env(safe-area-inset-bottom));
     height: auto;
+    max-width: none;
     overflow: visible;
-    flex-direction: row;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
   }
-  .sidebar-nav {
-    flex-direction: row;
-    flex-wrap: wrap;
+
+  .bottom-nav {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    gap: 2px;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-top: 1px solid var(--outline-variant);
+    box-shadow: 0 -2px 12px rgba(20, 24, 31, 0.05);
   }
-  .sidebar-footer {
-    border-top: none;
-    padding-top: 0;
-    margin-left: auto;
-    flex-direction: row;
-    align-items: center;
-  }
-  /* The bar is now at the top of the page, so the account menu must drop
-     downward instead of upward (which would render off-screen). */
+
+  /* The account menu now anchors under the top-bar avatar — drop it downward,
+     right-aligned, instead of the desktop upward variant. */
   .menu.menu-up {
-    top: calc(100% + 6px);
+    top: calc(100% + 8px);
     bottom: auto;
     left: auto;
     right: 0;
   }
-  .content {
-    padding: 24px 20px 48px;
-    height: auto;
-    overflow: visible;
-  }
 }
 
-/* On phones, keep the top bar compact: icon-only account button, no brand sub. */
-@media (max-width: 560px) {
-  .brand-sub {
+/* Only on the very narrowest phones, drop the bottom-nav labels for an icon-only
+   bar (the four short labels otherwise fit comfortably down to ~330px). */
+@media (max-width: 330px) {
+  .bottom-nav-item span {
     display: none;
   }
-  .sidebar-user-text {
-    display: none;
-  }
-  .sidebar-user-caret {
-    display: none;
-  }
-  .sidebar-user-btn {
-    padding: 6px;
+  .bottom-nav-item {
+    padding: 11px 2px;
   }
 }
 

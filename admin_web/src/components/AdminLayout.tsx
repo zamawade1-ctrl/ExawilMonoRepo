@@ -12,7 +12,12 @@ const NAV = [
   { to: '/codes', label: 'Activation codes', icon: KeyIcon },
 ];
 
-/** The signed-in admin frame: fixed brand sidebar + topbar, routed content below. */
+/**
+ * The signed-in admin frame. Desktop: a fixed brand sidebar + scrolling content.
+ * Mobile / installed-PWA: a compact top bar with the account menu + a native-feeling
+ * bottom navigation bar. Both surfaces share the same account menu markup — CSS
+ * shows only the one that fits the current breakpoint.
+ */
 export function AdminLayout() {
   const user = useAuthStore((s) => s.user);
   const signOut = useAuthStore((s) => s.signOut);
@@ -28,9 +33,46 @@ export function AdminLayout() {
     .join('')
     .toUpperCase();
 
+  const accountMenu = menuOpen && (
+    <>
+      <div className="menu-scrim" onClick={() => setMenuOpen(false)} />
+      <div className="menu menu-up" role="menu">
+        <button
+          role="menuitem"
+          onClick={() => {
+            toggleTheme();
+          }}
+        >
+          {theme === 'dark' ? '☀️  Light mode' : '🌙  Dark mode'}
+        </button>
+        <button
+          role="menuitem"
+          onClick={() => {
+            setMenuOpen(false);
+            navigate('/dashboard');
+          }}
+        >
+          Settings
+        </button>
+        <div className="menu-divider" />
+        <button
+          role="menuitem"
+          className="menu-danger"
+          onClick={() => {
+            signOut();
+            navigate('/sign-in', { replace: true });
+          }}
+        >
+          <LogoutIcon /> Sign out
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <ToastProvider>
       <div className="admin-shell">
+        {/* ---- Desktop sidebar ------------------------------------------- */}
         <aside className="sidebar">
           <div className="sidebar-brand">
             <Logo size={42} />
@@ -71,44 +113,52 @@ export function AdminLayout() {
                 </div>
                 <span className="sidebar-user-caret">⋯</span>
               </button>
-
-              {menuOpen && (
-                <>
-                  <div className="menu-scrim" onClick={() => setMenuOpen(false)} />
-                  <div className="menu menu-up" role="menu">
-                    <button role="menuitem" onClick={toggleTheme}>
-                      {theme === 'dark' ? '☀️  Light mode' : '🌙  Dark mode'}
-                    </button>
-                    <button
-                      role="menuitem"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        navigate('/dashboard');
-                      }}
-                    >
-                      Settings
-                    </button>
-                    <div className="menu-divider" />
-                    <button
-                      role="menuitem"
-                      className="menu-danger"
-                      onClick={() => {
-                        signOut();
-                        navigate('/sign-in', { replace: true });
-                      }}
-                    >
-                      <LogoutIcon /> Sign out
-                    </button>
-                  </div>
-                </>
-              )}
+              {accountMenu}
             </div>
           </div>
         </aside>
 
+        {/* ---- Mobile top bar -------------------------------------------- */}
+        <header className="mobile-topbar">
+          <div className="mobile-topbar-brand">
+            <Logo size={30} />
+            <span className="brand-name">e-Xawil</span>
+          </div>
+          <div className="menu-anchor">
+            <button
+              type="button"
+              className="mobile-account-btn"
+              onClick={() => setMenuOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="Account menu"
+            >
+              <div className="avatar">{initials}</div>
+            </button>
+            {accountMenu}
+          </div>
+        </header>
+
+        {/* ---- Routed content -------------------------------------------- */}
         <main className="content">
           <Outlet />
         </main>
+
+        {/* ---- Mobile bottom navigation ---------------------------------- */}
+        <nav className="bottom-nav" aria-label="Primary">
+          {NAV.map(({ to, label, icon: Icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) =>
+                `bottom-nav-item${isActive ? ' bottom-nav-item-active' : ''}`
+              }
+            >
+              <Icon />
+              <span>{label === 'Activation codes' ? 'Codes' : label}</span>
+            </NavLink>
+          ))}
+        </nav>
       </div>
     </ToastProvider>
   );
