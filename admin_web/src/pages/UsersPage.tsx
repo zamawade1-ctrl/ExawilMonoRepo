@@ -128,12 +128,21 @@ export function UsersPage() {
 
   const selected = customers.find((u) => u.userId === selectedId) ?? null;
 
+  const TEXT_COLS: SortKey[] = ['name', 'phone', 'device', 'kind'];
+
   function toggleSort(key: SortKey) {
-    const textCols: SortKey[] = ['name', 'phone', 'device', 'kind'];
     setSort((s) =>
       s.key === key
         ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' }
-        : { key, dir: textCols.includes(key) ? 'asc' : 'desc' },
+        : { key, dir: TEXT_COLS.includes(key) ? 'asc' : 'desc' },
+    );
+  }
+
+  // Mobile sort <select>: switch the key, defaulting to that column's natural
+  // direction (text A→Z, everything else newest/most-first). No-op if unchanged.
+  function setSortKey(key: SortKey) {
+    setSort((s) =>
+      s.key === key ? s : { key, dir: TEXT_COLS.includes(key) ? 'asc' : 'desc' },
     );
   }
 
@@ -181,6 +190,36 @@ export function UsersPage() {
         </div>
       </div>
 
+      {/* Mobile-only sort control — stands in for the datatable's sortable column
+          headers, which the card view doesn't have. Hidden ≥861px via CSS. */}
+      <div className="mobile-sort">
+        <label className="mobile-sort-label" htmlFor="mobile-sort-select">
+          Sort
+        </label>
+        <select
+          id="mobile-sort-select"
+          className="mobile-sort-select"
+          value={sort.key}
+          onChange={(e) => setSortKey(e.target.value as SortKey)}
+        >
+          {COLUMNS.map((c) => (
+            <option key={c.key} value={c.key}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="mobile-sort-dir"
+          onClick={() =>
+            setSort((s) => ({ ...s, dir: s.dir === 'asc' ? 'desc' : 'asc' }))
+          }
+          aria-label={`Sorted ${sort.dir === 'asc' ? 'ascending' : 'descending'}; tap to reverse`}
+        >
+          {sort.dir === 'asc' ? '▲ Asc' : '▼ Desc'}
+        </button>
+      </div>
+
       <div className="users-layout">
         <div className="users-main">
           {error ? (
@@ -190,7 +229,7 @@ export function UsersPage() {
               <span className="spinner" />
             </div>
           ) : (
-            <div className="table-card">
+            <div className="table-card users-table-view">
               <div className="table-scroll">
               <table className="datatable">
                 <thead>
@@ -283,6 +322,24 @@ export function UsersPage() {
               </table>
               </div>
 
+              {/* Mobile card list — same paged rows, reflowed as cards. Revealed
+                  ≤860px (and the table hidden) via CSS. */}
+              <div className="user-cards">
+                {pageRows.length === 0 ? (
+                  <p className="table-empty">No matching customers.</p>
+                ) : (
+                  pageRows.map((u) => (
+                    <UserCard
+                      key={u.userId}
+                      user={u}
+                      fetchedAt={fetchedAt}
+                      selected={u.userId === selectedId}
+                      onSelect={() => setSelectedId(u.userId)}
+                    />
+                  ))
+                )}
+              </div>
+
               <div className="pagination">
                 <span className="pagination-info">
                   {sorted.length === 0
@@ -323,6 +380,82 @@ export function UsersPage() {
         />
       </div>
     </>
+  );
+}
+
+/**
+ * Mobile card for one customer — the reflowed equivalent of a datatable row.
+ * Carries the same fields (name, phone, plan badge + progress, device, kind,
+ * activation, last edited) and the same select-on-tap behaviour.
+ */
+function UserCard({
+  user: u,
+  fetchedAt,
+  selected,
+  onSelect,
+}: {
+  user: AdminUser;
+  fetchedAt: number;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const view = planView(u.plan, fetchedAt);
+  const badge = planBadge(view.state);
+  return (
+    <button
+      type="button"
+      className={`ucard${selected ? ' ucard-selected' : ''}`}
+      onClick={onSelect}
+    >
+      <div className="ucard-top">
+        <div className="ucard-id">
+          <div className="ucard-name">{u.fullName || '—'}</div>
+          <div className="ucard-phone">{u.phone ?? '—'}</div>
+        </div>
+        <span className={`badge ${badge.className}`}>{badge.label}</span>
+      </div>
+
+      {view.state !== 'expired' && (
+        <div>
+          <div
+            className={`plan-bar ${badge.className}`}
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(view.progressRemaining * 100)}
+          >
+            <div
+              className="plan-bar-fill"
+              style={{ width: `${view.progressRemaining * 100}%` }}
+            />
+          </div>
+          <span className="ucard-remaining">{view.remainingLabel} left</span>
+        </div>
+      )}
+
+      <div className="ucard-meta">
+        <div className="ucard-meta-item">
+          <span className="ucard-meta-k">Device</span>
+          <span className="ucard-meta-v">
+            {u.hasDevice ? (u.deviceLabel ?? 'Registered') : '—'}
+          </span>
+        </div>
+        <div className="ucard-meta-item">
+          <span className="ucard-meta-k">Plan kind</span>
+          <span className="ucard-meta-v">{u.planKind ?? '—'}</span>
+        </div>
+        <div className="ucard-meta-item">
+          <span className="ucard-meta-k">Last edited</span>
+          <span className="ucard-meta-v">
+            {fmtDate(u.lastModifiedAtUtc ?? u.createdAtUtc)}
+          </span>
+        </div>
+        <div className="ucard-meta-item ucard-meta-activation">
+          <span className="ucard-meta-k">Activation code</span>
+          <ActivationCell user={u} />
+        </div>
+      </div>
+    </button>
   );
 }
 

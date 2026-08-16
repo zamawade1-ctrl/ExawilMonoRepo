@@ -1129,39 +1129,134 @@
   box-shadow: var(--shadow-sm);
 }
 
-/* ---- User cards ---------------------------------------------------------- */
-.user-list {
+/* ==========================================================================
+   Users — mobile card list + mobile sort control
+   The datatable is the desktop view; on narrow screens (≤860px) the table is
+   swapped for a stack of cards (a table row can't reflow, a card can) and a
+   dedicated sort control replaces the table's sortable column headers. Search,
+   filtering and pagination are shared and unchanged across both views.
+   Both `.mobile-sort` and `.user-cards` are hidden here and revealed in the
+   ≤860px media block below.
+   ========================================================================== */
+.mobile-sort,
+.user-cards {
+  display: none;
+}
+.mobile-sort {
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.mobile-sort-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.mobile-sort-select {
+  flex: 1;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--outline);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--on-surface);
+  font: inherit;
+  font-size: 0.9rem;
+}
+.mobile-sort-dir {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--outline);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--on-surface);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mobile-sort-dir:hover {
+  border-color: var(--leon-green);
+  color: var(--leon-green-dark);
+}
+
+.user-cards {
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+.ucard {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-.user-card {
+  width: 100%;
+  text-align: left;
   background: var(--surface);
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-lg);
-  padding: 14px 16px;
+  padding: 14px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.user-card-main {
+.ucard:hover {
+  border-color: var(--outline);
+}
+.ucard-selected {
+  border-color: var(--leon-green);
+  box-shadow: 0 0 0 1px var(--leon-green);
+}
+.ucard-top {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
 }
-.user-card-id {
-  flex: 1;
+.ucard-id {
   min-width: 0;
 }
-.user-card-name {
+.ucard-name {
   font-weight: 700;
   font-size: 1rem;
 }
-.user-card-phone {
+.ucard-phone {
   font-size: 0.85rem;
   color: var(--muted);
 }
-.user-card-right {
+.ucard-remaining {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.ucard-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--outline-variant);
+}
+.ucard-meta-item {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ucard-meta-k {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.ucard-meta-v {
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ucard-meta-activation {
+  grid-column: 1 / -1;
 }
 .menu-anchor {
   position: relative;
@@ -1230,14 +1325,6 @@
 }
 .plan-remaining.badge-trial {
   color: var(--status-trial);
-}
-.user-card-device {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 8px;
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 /* ---- Toast --------------------------------------------------------------- */
@@ -1557,6 +1644,17 @@
     bottom: auto;
     left: auto;
     right: 0;
+  }
+
+  /* Users page: swap the datatable for the card list + reveal the sort control. */
+  .users-table-view .table-scroll {
+    display: none;
+  }
+  .mobile-sort {
+    display: flex;
+  }
+  .user-cards {
+    display: flex;
   }
 }
 
