@@ -166,7 +166,7 @@ class AppUpdateController extends Notifier<AppUpdateState> {
       return;
     }
 
-    final installed = await _installedVersionCode();
+    final (installed, installedName) = await _installedVersion();
     state = state.copyWith(
       phase: AppUpdatePhase.checking,
       installedVersionCode: installed,
@@ -185,7 +185,7 @@ class AppUpdateController extends Notifier<AppUpdateState> {
       return;
     }
 
-    if (info != null && info.isNewerThan(installed)) {
+    if (info != null && info.isNewerThan(installed, installedName)) {
       state = state.copyWith(
         phase: AppUpdatePhase.updateRequired,
         info: info,
@@ -331,12 +331,15 @@ class AppUpdateController extends Notifier<AppUpdateState> {
     return path;
   }
 
-  Future<int> _installedVersionCode() async {
+  /// The installed build number AND version name, read together from the package
+  /// so the gate can compare by the (loop-proof) semantic version name and keep
+  /// the code as a fallback. Returns (0, '') if the package info can't be read.
+  Future<(int, String)> _installedVersion() async {
     try {
       final pkg = await PackageInfo.fromPlatform();
-      return int.tryParse(pkg.buildNumber) ?? 0;
+      return (int.tryParse(pkg.buildNumber) ?? 0, pkg.version);
     } catch (_) {
-      return 0;
+      return (0, '');
     }
   }
 }
