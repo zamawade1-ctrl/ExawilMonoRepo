@@ -105,6 +105,24 @@ class MainActivity : FlutterFragmentActivity() {
                         }
                         result.success(null)
                     }
+                    "getDeviceId" -> {
+                        // Settings.Secure.ANDROID_ID: a per-device (per app-signing-key)
+                        // identifier that is genuinely UNIQUE across physical devices —
+                        // unlike device_info_plus's `id` (Build.ID, the firmware build
+                        // string, which is IDENTICAL on every phone of the same model +
+                        // build and so made two distinct "samsung SM-A075F" phones collide
+                        // under the one-account-per-device check). The real hardware serial
+                        // (Build.getSerial) is unreadable without privileged/carrier access
+                        // on Android 10+, so ANDROID_ID is the correct stable unique id.
+                        // It also survives app reinstalls, so a reinstall doesn't lock the
+                        // real owner out. Raw value is hashed on the Dart side before it
+                        // leaves the device.
+                        val androidId = Settings.Secure.getString(
+                            contentResolver,
+                            Settings.Secure.ANDROID_ID,
+                        )
+                        result.success(androidId)
+                    }
                     "getStatus" -> result.success(status(settings))
                     "getTransactions" -> result.success(TransactionStore.all(this))
                     "getStorageInfo" -> result.success(TransactionStore.storageInfo(this))

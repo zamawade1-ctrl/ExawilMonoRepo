@@ -140,11 +140,30 @@ public class UserAuthRepository : IUserAuthRepository
             {
                 if (presentedDeviceId.Length > 0 && presentedDeviceId != user.DeviceId)
                 {
-                    _logger.LogWarning(
-                        "Rejected login for user {UserId}: device mismatch (bound {Bound}, presented {Presented}).",
+                    // The presented id differs from what's bound. This is expected for accounts that
+                    // registered under the OLD device-id source (Build.ID, shared across identical
+                    // phones): after the client update they present the new, truly-unique ANDROID_ID.
+                    // Rebind to it — but only if no OTHER account already owns the presented id, so we
+                    // still enforce one-account-per-device and never let stolen credentials hop onto a
+                    // phone that already has its own account.
+                    var claimedByOther = await _context.Users.AnyAsync(
+                        u => u.Id != user.Id && u.DeviceId == presentedDeviceId);
+                    if (claimedByOther)
+                    {
+                        _logger.LogWarning(
+                            "Rejected login for user {UserId}: presented device {Presented} already " +
+                            "belongs to another account (bound was {Bound}).",
+                            user.Id, presentedDeviceId, user.DeviceId);
+                        return ServiceResponse<UserAuthResponseDto>.Conflict(
+                            "This device is already registered to another account. Only one account per device is allowed.");
+                    }
+
+                    _logger.LogInformation(
+                        "Rebinding user {UserId} from device {Old} to {New} (migration to unique device id).",
                         user.Id, user.DeviceId, presentedDeviceId);
-                    return ServiceResponse<UserAuthResponseDto>.Conflict(
-                        "This account is registered to another device. Contact support to move it to this phone.");
+                    user.DeviceId = presentedDeviceId;
+                    user.DeviceLabel = dto.DeviceLabel?.Trim();
+                    user.DeviceRegisteredAtUtc = DateTime.UtcNow;
                 }
             }
             else if (presentedDeviceId.Length > 0)
