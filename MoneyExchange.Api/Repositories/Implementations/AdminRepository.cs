@@ -58,6 +58,10 @@ public class AdminRepository : IAdminRepository
                         : _planCalculator.PlanDays * 24 * 60;
             var planKind = PlanKinds.Label(durationMinutes);
 
+            // Free-unlimited is the "Forever" plan: it's always billed at $0, regardless of the price
+            // the client sends. Priced plans keep whatever PriceUsd was passed (null = unpriced/legacy).
+            var priceUsd = dto.Forever == true ? 0 : dto.PriceUsd;
+
             var count = Math.Clamp(dto.Count ?? 1, 1, MaxBatch);
             var assignedPhone = PhoneNumberUtil.Normalize(dto.Phone);
             var assigned = assignedPhone.Length > 0 ? assignedPhone : null;
@@ -82,7 +86,7 @@ public class AdminRepository : IAdminRepository
                     Code = raw,
                     DurationMinutes = durationMinutes,
                     DurationDays = durationMinutes / (24 * 60),   // whole-day count, for display only
-                    PriceUsd = dto.PriceUsd,   // admin billing amount; null = unpriced, 0 = free plan
+                    PriceUsd = priceUsd,   // admin billing amount; null = unpriced, 0 = free plan (incl. free-unlimited)
                     AssignedToPhone = assigned,
                     ExpiresAtUtc = expiresAt,
                     CreatedAtUtc = now
