@@ -318,6 +318,11 @@
   width: 100%;
   max-width: 380px;
 }
+/* Mobile-only brand mark at the top of the form (hidden on desktop, where the
+   green side panel already carries the logo). */
+.signin-form-brand {
+  display: none;
+}
 .signin-form-head {
   margin-bottom: 28px;
 }
@@ -1588,6 +1593,23 @@
   }
   .signin-brand {
     display: none;
+  }
+  /* Reveal the app logo above the form now that the green panel is gone. */
+  .signin-form-brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .signin-form-brand-name {
+    font-size: 1.7rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--primary);
+  }
+  .signin-form-head {
+    text-align: center;
   }
 
   /* Swap the desktop sidebar for a fixed top bar + bottom navigation — the

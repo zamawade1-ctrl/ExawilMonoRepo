@@ -95,6 +95,13 @@ export function SignInPage() {
       {/* Right: white form panel */}
       <section className="signin-form-panel">
         <form className="signin-form" onSubmit={onSubmit} noValidate>
+          {/* Mobile-only brand mark — on phones the green brand panel is hidden,
+              so surface the app logo at the top of the form instead. */}
+          <div className="signin-form-brand">
+            <Logo size={56} variant="color" />
+            <span className="signin-form-brand-name">e-Xawil</span>
+          </div>
+
           <div className="signin-form-head">
             <h2>Sign in</h2>
             <p>Use your administrator credentials to continue.</p>
