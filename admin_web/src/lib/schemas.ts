@@ -81,6 +81,9 @@ export const adminUserSchema = z.object({
   lastLoginAtUtc: z.string(),
   lastModifiedAtUtc: z.string().nullish(),
   planKind: z.string().nullish(),
+  // Exact price billed for the redeemed plan (null = legacy/unpriced code, 0 = free plan such as
+  // free-unlimited). Distinguishes plans that share a label — e.g. Forever·$200 vs Free unlimited·$0.
+  planPriceUsd: z.number().nullish(),
   planStartedAtUtc: z.string().nullish(),
   plan: planStatusSchema,
   // Latest activation code issued to this account: when it was generated, whether it's been used,

@@ -15,7 +15,9 @@ export function BillingPage() {
       .filter((u) => u.role.toLowerCase() !== 'admin' && u.planKind)
       .map((u) => ({
         user: u,
-        price: planPrice(u.planKind),
+        // Prefer the exact price stored at redemption (0 = free plan, e.g. free-unlimited); fall back
+        // to the label-derived price only for legacy/unpriced codes that predate PlanPriceUsd.
+        price: u.planPriceUsd ?? planPrice(u.planKind),
         paidAt: u.planStartedAtUtc ?? u.lastModifiedAtUtc ?? u.createdAtUtc,
       }))
       .sort((a, b) => new Date(b.paidAt).getTime() - new Date(a.paidAt).getTime());
