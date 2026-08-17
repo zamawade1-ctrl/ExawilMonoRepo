@@ -323,6 +323,9 @@
 .signin-form-brand {
   display: none;
 }
+.signin-form-foot {
+  display: none;
+}
 .signin-form-head {
   margin-bottom: 28px;
 }
@@ -1610,6 +1613,13 @@
   }
   .signin-form-head {
     text-align: center;
+  }
+  .signin-form-foot {
+    display: block;
+    margin: 22px 0 0;
+    text-align: center;
+    font-size: 0.82rem;
+    color: var(--muted);
   }
 
   /* Swap the desktop sidebar for a fixed top bar + bottom navigation — the

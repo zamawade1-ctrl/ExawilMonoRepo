@@ -165,6 +165,10 @@ export function SignInPage() {
           >
             {loading ? <span className="spinner spinner-sm" /> : 'Sign in'}
           </button>
+
+          {/* Mobile-only footer — the desktop brand panel carries this note, so
+              restore it here now that the panel is hidden on phones. */}
+          <p className="signin-form-foot">Authorized administrators only.</p>
         </form>
       </section>
     </div>
