@@ -114,7 +114,7 @@ class NativeForwardingController extends AsyncNotifier<NativeForwardingState> {
     String? pin,
     String? secondaryPin,
     String? bankPin,
-    required int intervalMinutes,
+    required int intervalSeconds,
   }) async {
     await _channel.saveSettings(
       forwardingMethod: forwardingMethod,
@@ -122,7 +122,7 @@ class NativeForwardingController extends AsyncNotifier<NativeForwardingState> {
       pin: pin,
       secondaryPin: secondaryPin,
       bankPin: bankPin,
-      intervalMinutes: intervalMinutes,
+      intervalSeconds: intervalSeconds,
     );
     await refresh();
   }

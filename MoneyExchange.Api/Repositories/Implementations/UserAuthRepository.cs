@@ -70,12 +70,28 @@ public class UserAuthRepository : IUserAuthRepository
                 return ServiceResponse<UserAuthResponseDto>.Conflict(
                     "This device is already registered to an account. Only one account per device is allowed.");
 
-            // Trial-used carries over per device: if this device has ANY prior record — including a
-            // soft-deleted one (IgnoreQueryFilters opts past the soft-delete filter) — the trial has
-            // already been spent here, so the new account starts with no fresh trial. Keyed to the
-            // device id, this survives even when the person re-registers with a different phone number.
-            var trialConsumed = deviceId.Length > 0
-                && await _context.Users.IgnoreQueryFilters().AnyAsync(u => u.DeviceId == deviceId);
+            // Per-device history carries forward across a delete + re-register. Fetch the most recent
+            // prior record for this device — INCLUDING a soft-deleted one (IgnoreQueryFilters opts
+            // past the soft-delete filter). Since an active account on this device would have been
+            // rejected above, anything found here is a soft-deleted (previously-deleted) account.
+            User? priorOnDevice = null;
+            if (deviceId.Length > 0)
+            {
+                priorOnDevice = await _context.Users
+                    .IgnoreQueryFilters()
+                    .Where(u => u.DeviceId == deviceId)
+                    .OrderByDescending(u => u.LastModifiedAtUtc ?? u.LastLoginAtUtc)
+                    .FirstOrDefaultAsync();
+            }
+
+            // If this device has been used before, the trial has already been spent here, so the new
+            // account gets no fresh trial (keyed to the device id, this survives re-registering with a
+            // different phone number). But a still-valid PAID plan is NOT lost on delete: carry the
+            // prior record's plan window forward, so someone who deletes their account while on Pro —
+            // or on the unlimited "Forever" plan — resumes that plan on re-registration instead of
+            // being sent to the activation page. An already-expired plan carries an expired
+            // PlanPaidUntilUtc (harmless: they simply fall through to the consumed trial → Expired).
+            var trialConsumed = priorOnDevice != null;
             var user = new User
             {
                 FullName = fullName,
@@ -91,6 +107,11 @@ public class UserAuthRepository : IUserAuthRepository
                 // already used its trial (see above), in which case it's expired from the start.
                 TrialStartedAtUtc = now,
                 TrialConsumed = trialConsumed,
+                // Carry any paid/unlimited plan forward from the deleted account on this device.
+                PlanPaidUntilUtc = priorOnDevice?.PlanPaidUntilUtc,
+                PlanStartedAtUtc = priorOnDevice?.PlanStartedAtUtc,
+                PlanDurationMinutes = priorOnDevice?.PlanDurationMinutes,
+                PlanPriceUsd = priorOnDevice?.PlanPriceUsd,
                 // The linked forwarding profile is created in the same transaction, so the User
                 // and Customer tables are always populated together and related via Customer.UserId.
                 Customer = new Customer

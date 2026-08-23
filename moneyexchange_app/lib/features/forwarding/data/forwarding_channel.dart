@@ -6,8 +6,8 @@ import 'package:flutter/services.dart';
 /// `ForwardingMode` enum (android/.../forwarding/ForwardingSettings.kt) -
 /// serialized as its ordinal, not a string.
 enum ForwardingMode {
-  /// Dials `*800#` on a timer (`intervalMinutes`), regardless of whether
-  /// money has actually arrived.
+  /// Dials `*800#` on a timer (`intervalSeconds`, as fast as every 30s),
+  /// regardless of whether money has actually arrived.
   autoForward,
 
   /// Never runs on a timer - only sweeps when a Zaad money-in SMS arrives.
@@ -74,6 +74,7 @@ class ForwardingStatus {
     required this.bankPin,
     required this.forwardingMethod,
     required this.intervalMinutes,
+    required this.intervalSeconds,
     required this.simSubscriptionId,
     required this.mode,
     required this.lastAccountPhone,
@@ -111,7 +112,13 @@ class ForwardingStatus {
   /// Mirrors the backend/native `ForwardingMethod` ordinal.
   final int forwardingMethod;
 
+  /// Legacy minutes cadence, kept for display fallbacks. [intervalSeconds] is the
+  /// real scheduling unit the native poller uses.
   final int intervalMinutes;
+
+  /// How often the auto-forward sweep runs, in seconds — as fast as every 30s.
+  final int intervalSeconds;
+
   final int simSubscriptionId;
   final ForwardingMode mode;
 
@@ -190,6 +197,7 @@ class ForwardingStatus {
         bankPin: map['bankPin'] as String?,
         forwardingMethod: (map['forwardingMethod'] as num?)?.toInt() ?? 0,
         intervalMinutes: (map['intervalMinutes'] as num?)?.toInt() ?? 1,
+        intervalSeconds: (map['intervalSeconds'] as num?)?.toInt() ?? 30,
         simSubscriptionId: (map['simSubscriptionId'] as num?)?.toInt() ?? -1,
         mode: ForwardingMode.fromWire(
           (map['mode'] as num?)?.toInt() ?? ForwardingMode.messageCheck.index,
@@ -252,6 +260,7 @@ class ForwardingChannel {
     String? bankPin,
     int? forwardingMethod,
     int? intervalMinutes,
+    int? intervalSeconds,
     int? simSubscriptionId,
     ForwardingMode? mode,
     bool? enabled,
@@ -266,6 +275,7 @@ class ForwardingChannel {
       if (bankPin != null && bankPin.isNotEmpty) 'bankPin': bankPin,
       'forwardingMethod': ?forwardingMethod,
       'intervalMinutes': ?intervalMinutes,
+      'intervalSeconds': ?intervalSeconds,
       'simSubscriptionId': ?simSubscriptionId,
       'mode': ?mode?.index,
       'enabled': ?enabled,

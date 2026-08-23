@@ -12,17 +12,25 @@ final autoForwardCountdownAnchorProvider =
 
 /// A live countdown + progress bar showing how long until the next automatic
 /// forward. Runs in parallel with the native auto-forward timer: the bar fills
-/// over one [intervalMinutes] cycle and, on reaching the end, wraps to the next
+/// over one [intervalSeconds] cycle and, on reaching the end, wraps to the next
 /// cycle. Pulling to refresh resets the anchor (see the provider), restarting it.
 ///
 /// Shown below the forwarding-mode section only while auto-forward mode is on.
 class AutoForwardCountdown extends ConsumerStatefulWidget {
-  const AutoForwardCountdown({super.key, required this.intervalMinutes});
+  const AutoForwardCountdown({super.key, required this.intervalSeconds});
 
-  final int intervalMinutes;
+  /// The sweep cadence in seconds — as fast as every 30s.
+  final int intervalSeconds;
 
   @override
   ConsumerState<AutoForwardCountdown> createState() => _AutoForwardCountdownState();
+}
+
+/// Formats a cadence (seconds) as "30 seconds" / "1 minute" / "2 minutes".
+String _cadenceLabel(int seconds) {
+  if (seconds < 60) return '$seconds seconds';
+  final minutes = seconds ~/ 60;
+  return '$minutes minute${minutes == 1 ? '' : 's'}';
 }
 
 class _AutoForwardCountdownState extends ConsumerState<AutoForwardCountdown> {
@@ -46,8 +54,7 @@ class _AutoForwardCountdownState extends ConsumerState<AutoForwardCountdown> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final intervalMs =
-        (widget.intervalMinutes.clamp(1, 60)) * 60 * 1000;
+    final intervalMs = (widget.intervalSeconds.clamp(30, 3600)) * 1000;
     final anchor = ref.watch(autoForwardCountdownAnchorProvider);
 
     // Elapsed within the current cycle (auto-wrapping every interval).
@@ -99,10 +106,9 @@ class _AutoForwardCountdownState extends ConsumerState<AutoForwardCountdown> {
           ),
           const SizedBox(height: 6),
           Text(
-            'Your balance is checked every ${widget.intervalMinutes} '
-            'minute${widget.intervalMinutes == 1 ? '' : 's'} and forwarded '
-            'automatically. Pull down to refresh — it runs a check now and '
-            'resets this timer.',
+            'Your balance is checked every ${_cadenceLabel(widget.intervalSeconds)} '
+            'and forwarded automatically. Pull down to refresh — it runs a check '
+            'now and resets this timer.',
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),

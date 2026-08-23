@@ -617,7 +617,7 @@ class _ForwardingTab extends ConsumerWidget {
               // directly below the forwarding-mode section.
               if (showCountdown) ...[
                 AutoForwardCountdown(
-                  intervalMinutes: status!.intervalMinutes,
+                  intervalSeconds: status!.intervalSeconds,
                 ),
                 const SizedBox(height: 20),
               ],

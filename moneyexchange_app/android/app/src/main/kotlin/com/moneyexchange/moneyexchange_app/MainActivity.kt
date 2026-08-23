@@ -91,6 +91,8 @@ class MainActivity : FlutterFragmentActivity() {
                             settings.forwardingMethod = ForwardingMethod.fromOrdinal(it)
                         }
                         call.argument<Int>("intervalMinutes")?.let { settings.intervalMinutes = it }
+                        // Seconds is the real scheduling unit (auto-forward can run every 30s).
+                        call.argument<Int>("intervalSeconds")?.let { settings.intervalSeconds = it }
                         call.argument<Int>("simSubscriptionId")?.let { settings.simSubscriptionId = it }
                         call.argument<Int>("mode")?.let { settings.mode = ForwardingMode.fromOrdinal(it) }
                         call.argument<Boolean>("enabled")?.let { settings.enabled = it }
@@ -324,6 +326,7 @@ class MainActivity : FlutterFragmentActivity() {
         "bankPin" to settings.bankPin,
         "forwardingMethod" to settings.forwardingMethod.ordinal,
         "intervalMinutes" to settings.intervalMinutes,
+        "intervalSeconds" to settings.intervalSeconds,
         "simSubscriptionId" to settings.simSubscriptionId,
         "mode" to settings.mode.ordinal,
         "lastAccountPhone" to settings.lastAccountPhone,

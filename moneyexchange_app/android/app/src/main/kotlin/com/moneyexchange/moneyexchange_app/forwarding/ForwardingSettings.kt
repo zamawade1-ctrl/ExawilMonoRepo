@@ -70,10 +70,32 @@ class ForwardingSettings(context: Context) {
         get() = prefs.getBoolean(KEY_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_ENABLED, value).apply()
 
-    /** How often the balance sweep runs. Clamped to a sane 1..60 range. */
+    /** How often the balance sweep runs, in whole minutes. Legacy unit — kept for the older
+     *  minutes-based clients; [intervalSeconds] is the real scheduling unit now. Clamped 1..60. */
     var intervalMinutes: Int
         get() = prefs.getInt(KEY_INTERVAL, DEFAULT_INTERVAL)
         set(value) = prefs.edit().putInt(KEY_INTERVAL, value.coerceIn(1, 60)).apply()
+
+    /**
+     * How often the auto-forward balance sweep runs, in SECONDS — the source of truth the poller
+     * schedules on (see [ForwardingForegroundService.scheduleNextTick]). Supersedes
+     * [intervalMinutes] so the sweep can run as often as every [MIN_INTERVAL_SEC] seconds (30s).
+     * When no seconds value has been saved yet it falls back to any legacy minutes value, else the
+     * [DEFAULT_INTERVAL_SEC] default. Always returned clamped to [MIN_INTERVAL_SEC]..[MAX_INTERVAL_SEC].
+     */
+    var intervalSeconds: Int
+        get() {
+            val storedSec = prefs.getInt(KEY_INTERVAL_SECONDS, 0)
+            if (storedSec > 0) return storedSec.coerceIn(MIN_INTERVAL_SEC, MAX_INTERVAL_SEC)
+            // No seconds value yet: honour a previously-saved minutes value, else default to 30s.
+            val effective =
+                if (prefs.contains(KEY_INTERVAL)) prefs.getInt(KEY_INTERVAL, DEFAULT_INTERVAL) * 60
+                else DEFAULT_INTERVAL_SEC
+            return effective.coerceIn(MIN_INTERVAL_SEC, MAX_INTERVAL_SEC)
+        }
+        set(value) = prefs.edit()
+            .putInt(KEY_INTERVAL_SECONDS, value.coerceIn(MIN_INTERVAL_SEC, MAX_INTERVAL_SEC))
+            .apply()
 
     /** Subscription id of the SIM to dial on; -1 = system default. */
     var simSubscriptionId: Int
@@ -231,6 +253,7 @@ class ForwardingSettings(context: Context) {
         private const val KEY_DESTINATION = "destination"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_INTERVAL = "interval_minutes"
+        private const val KEY_INTERVAL_SECONDS = "interval_seconds"
         private const val KEY_SIM_SUB_ID = "sim_subscription_id"
         private const val KEY_MODE = "mode"
         private const val KEY_METHOD = "forwarding_method"
@@ -244,6 +267,15 @@ class ForwardingSettings(context: Context) {
         private const val KEY_LAST_BALANCE_AT = "last_leftover_balance_at"
         private const val KEY_EXCHANGE_SIGS = "forwarded_exchange_sigs"
         private const val DEFAULT_INTERVAL = 1
+
+        /** Default auto-forward sweep cadence when nothing has been saved yet: every 30 seconds. */
+        private const val DEFAULT_INTERVAL_SEC = 30
+
+        /** Fastest allowed sweep cadence — every 30 seconds. */
+        private const val MIN_INTERVAL_SEC = 30
+
+        /** Slowest allowed sweep cadence — once an hour. */
+        private const val MAX_INTERVAL_SEC = 3600
 
         /** How many recent exchange signatures to remember for dedup. */
         private const val MAX_SIGS = 50

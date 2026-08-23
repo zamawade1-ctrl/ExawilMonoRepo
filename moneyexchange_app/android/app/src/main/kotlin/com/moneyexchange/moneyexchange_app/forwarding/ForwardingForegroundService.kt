@@ -27,9 +27,9 @@ import kotlin.math.floor
  *      type the primary PIN on the confirmation popup.
  *
  * The two modes forward differently:
- *  - [ForwardingMode.AUTO_FORWARD]: on a timer, every `intervalMinutes`, runs a
- *    full `*800#` **balance sweep** ([ACTION_SWEEP_NOW]) and forwards the balance —
- *    the persistent, always-on poller.
+ *  - [ForwardingMode.AUTO_FORWARD]: on a timer, every `intervalSeconds` (as fast as
+ *    every 30s), runs a full `*800#` **balance sweep** ([ACTION_SWEEP_NOW]) and
+ *    forwards the balance — the persistent, always-on poller.
  *  - [ForwardingMode.MESSAGE_CHECK]: no timer, and NO `*800#` balance check. Each
  *    time [SmsReceiver] sees a **Zaad 898** dollar-exchange SMS it forwards the
  *    exact exchanged amount read from that SMS ([ACTION_FORWARD_AMOUNT]), then stops
@@ -485,7 +485,9 @@ class ForwardingForegroundService : Service() {
      * up — the serialized worker still prevents overlap.
      */
     private fun scheduleNextTick(anchorElapsedMs: Long) {
-        val intervalMs = ForwardingSettings(this).intervalMinutes.coerceIn(1, 60) * 60_000L
+        // Seconds-based cadence: the auto-forward poller can now check as often as every 30
+        // seconds (see [ForwardingSettings.intervalSeconds], already clamped to 30..3600s).
+        val intervalMs = ForwardingSettings(this).intervalSeconds * 1000L
         val now = SystemClock.elapsedRealtime()
         val next = (anchorElapsedMs + intervalMs).coerceAtLeast(now + MIN_TICK_SLACK_MS)
 

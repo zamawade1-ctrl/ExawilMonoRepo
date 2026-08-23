@@ -154,8 +154,9 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
   final _pinController = TextEditingController();
   final _bankPinController = TextEditingController();
 
-  // The balance-sweep interval; only applies while auto-forward mode is active.
-  int _intervalMinutes = 1;
+  // The balance-sweep interval in SECONDS; only applies while auto-forward mode is
+  // active. Defaults to the fastest cadence (every 30 seconds).
+  int _intervalSeconds = 30;
   bool _seededFromNative = false;
   bool _saving = false;
   // Reveals the PIN fields as you type. Off by default so PINs stay masked.
@@ -189,7 +190,7 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
   void _seedFromNative(ForwardingStatus? status) {
     if (_seededFromNative || status == null) return;
     _seededFromNative = true;
-    _intervalMinutes = status.intervalMinutes.clamp(1, 5);
+    _intervalSeconds = _nearestIntervalOption(status.intervalSeconds);
     if (_pinController.text.isEmpty && (status.pin?.isNotEmpty ?? false)) {
       _pinController.text = status.pin!;
     }
@@ -247,7 +248,7 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
                   : _pinController.text.trim(),
               secondaryPin: null,
               bankPin: _bankPinController.text.trim(),
-              intervalMinutes: _intervalMinutes,
+              intervalSeconds: _intervalSeconds,
             );
 
         // Best-effort backend mirror — forwarding runs entirely on-device, so an
@@ -312,7 +313,7 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
       rows.add(
         _ReadOnlyRow(
           label: 'Check every',
-          value: '$_intervalMinutes minute${_intervalMinutes == 1 ? '' : 's'}',
+          value: _intervalLabel(_intervalSeconds),
         ),
       );
     }
@@ -415,25 +416,45 @@ class _DestinationFormState extends ConsumerState<_DestinationForm> {
     );
   }
 
+  /// The balance-sweep interval choices, in seconds — as fast as every 30 seconds.
+  static const _intervalOptions = <int>[30, 60, 120, 180, 300];
+
+  /// Formats an interval (seconds) as a human label, e.g. "30 seconds" / "2 minutes".
+  static String _intervalLabel(int seconds) {
+    if (seconds < 60) return '$seconds seconds';
+    final minutes = seconds ~/ 60;
+    return '$minutes minute${minutes == 1 ? '' : 's'}';
+  }
+
+  /// Snaps an arbitrary saved interval to the closest offered option, so a value
+  /// stored by an older client still selects a valid dropdown entry.
+  static int _nearestIntervalOption(int seconds) {
+    var best = _intervalOptions.first;
+    for (final option in _intervalOptions) {
+      if ((option - seconds).abs() < (best - seconds).abs()) best = option;
+    }
+    return best;
+  }
+
   /// The "Check every" balance-sweep interval dropdown (auto-forward mode only).
   Widget _checkIntervalField() {
     return DropdownButtonFormField<int>(
-      initialValue: _intervalMinutes,
+      initialValue: _nearestIntervalOption(_intervalSeconds),
       decoration: const InputDecoration(
         labelText: 'Check every',
         helperText: 'How often the balance sweep runs (auto-forward mode)',
         helperMaxLines: 2,
       ),
       items: [
-        for (var m = 1; m <= 5; m++)
+        for (final seconds in _intervalOptions)
           DropdownMenuItem(
-            value: m,
-            child: Text('$m minute${m == 1 ? '' : 's'}'),
+            value: seconds,
+            child: Text(_intervalLabel(seconds)),
           ),
       ],
       onChanged: _saving
           ? null
-          : (v) => setState(() => _intervalMinutes = v ?? 1),
+          : (v) => setState(() => _intervalSeconds = v ?? 30),
     );
   }
 
