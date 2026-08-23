@@ -18,8 +18,17 @@ class ApiClient {
        _dio = Dio(
          BaseOptions(
            baseUrl: AppConfig.apiBaseUrl,
-           connectTimeout: const Duration(seconds: 10),
-           receiveTimeout: const Duration(seconds: 10),
+           // The production API runs on Render's free tier, which spins the instance
+           // DOWN after ~15 min idle and takes 30-60s to cold-start on the next
+           // request. The old 10s timeouts made that first request fail — most
+           // visibly on "Delete account", which is often the first backend call of a
+           // session (the app restores the session from local storage without hitting
+           // the server), so it reliably hit a cold start and surfaced "Could not
+           // delete your account. Please try again." These generous timeouts let the
+           // cold start complete instead of erroring; warm requests still return fast.
+           connectTimeout: const Duration(seconds: 30),
+           receiveTimeout: const Duration(seconds: 60),
+           sendTimeout: const Duration(seconds: 60),
          ),
        ) {
     _dio.interceptors.add(
