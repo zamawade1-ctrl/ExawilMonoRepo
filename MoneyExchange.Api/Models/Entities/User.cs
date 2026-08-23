@@ -46,6 +46,15 @@ public class User
     public DateTime TrialStartedAtUtc { get; set; } = DateTime.UtcNow;
 
     /// <summary>
+    /// True once this account's free trial has been "spent" and must never be re-granted. Set when
+    /// an account is created on a device (<see cref="DeviceId"/>) that already has a prior record —
+    /// including a soft-deleted one — so deleting and re-registering (even with a different phone
+    /// number) can't mint a fresh trial. When true the plan calculation treats the trial as already
+    /// ended regardless of <see cref="TrialStartedAtUtc"/> (see <c>PlanCalculator.TrialEndsAt</c>).
+    /// </summary>
+    public bool TrialConsumed { get; set; }
+
+    /// <summary>
     /// When the customer's paid plan is valid through, or null if they've never paid. While this is
     /// in the future the customer is on the <b>Pro</b> plan; otherwise access depends on the trial
     /// window (see <see cref="TrialStartedAtUtc"/>). Set by the payment flow (Telesom, stubbed).
@@ -133,4 +142,19 @@ public class User
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public DateTime LastLoginAtUtc { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Soft-delete marker. Account deletion no longer removes the row: instead it sets this true and
+    /// nulls the reusable identity fields (<see cref="PhoneNumber"/>, <see cref="Username"/>,
+    /// <see cref="Email"/>, <see cref="PasswordHash"/>, <see cref="AppPinHash"/>,
+    /// <see cref="GoogleSubjectId"/>) so they can be registered again, while keeping the
+    /// device-binding fields (<see cref="DeviceId"/>, <see cref="DeviceLabel"/>) so the device's
+    /// trial-used history survives. A global query filter hides <c>IsDeleted</c> rows from every
+    /// normal query (login, admin lists, subscription) — the only reader that opts back in
+    /// (via <c>IgnoreQueryFilters</c>) is registration's device-history lookup.
+    /// </summary>
+    public bool IsDeleted { get; set; }
+
+    /// <summary>When the account was soft-deleted (see <see cref="IsDeleted"/>); null if active.</summary>
+    public DateTime? DeletedAtUtc { get; set; }
 }

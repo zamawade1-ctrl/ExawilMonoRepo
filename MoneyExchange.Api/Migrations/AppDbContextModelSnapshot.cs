@@ -308,6 +308,9 @@ namespace MoneyExchange.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("DeviceId")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
@@ -331,6 +334,9 @@ namespace MoneyExchange.Api.Migrations
                     b.Property<string>("GoogleSubjectId")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTime>("LastLoginAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -369,6 +375,9 @@ namespace MoneyExchange.Api.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
+
+                    b.Property<bool>("TrialConsumed")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTime>("TrialStartedAtUtc")
                         .HasColumnType("timestamp with time zone");

@@ -45,6 +45,10 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.PhoneNumber).IsUnique();
             // Store the role as its name ("User"/"Admin") rather than an int, for readable rows.
             entity.Property(e => e.Role).HasConversion<string>().HasMaxLength(20);
+            // Soft-deleted accounts are hidden from every normal query (login, auth lookups, admin
+            // lists, subscription). Registration's device-history lookup opts back in with
+            // IgnoreQueryFilters() so a deleted device still carries its trial-used state forward.
+            entity.HasQueryFilter(e => !e.IsDeleted);
         });
 
         modelBuilder.Entity<ActivationCode>(entity =>
@@ -64,6 +68,11 @@ public class AppDbContext : DbContext
                 .WithOne(u => u.Customer)
                 .HasForeignKey<Customer>(e => e.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // Mirror the User soft-delete filter so a deleted user's forwarding profile is hidden
+            // too (and to keep EF from warning about the filtered principal / unfiltered dependent).
+            // Legacy anonymously-registered rows (UserId null) stay visible.
+            entity.HasQueryFilter(e => e.User == null || !e.User.IsDeleted);
         });
 
         modelBuilder.Entity<OtpVerification>(entity =>

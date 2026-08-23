@@ -18,9 +18,15 @@ public class PlanCalculator
         _options = options.Value;
     }
 
-    /// <summary>When the free trial ends: the trial-start time plus the configured trial length.</summary>
+    /// <summary>
+    /// When the free trial ends: the trial-start time plus the configured trial length — unless the
+    /// trial was already consumed on this device (<see cref="User.TrialConsumed"/>), in which case it
+    /// ended the instant it started, so a re-registered account gets no fresh trial window.
+    /// </summary>
     public DateTime TrialEndsAt(User user) =>
-        user.TrialStartedAtUtc.AddMinutes(_options.TrialMinutes);
+        user.TrialConsumed
+            ? user.TrialStartedAtUtc
+            : user.TrialStartedAtUtc.AddMinutes(_options.TrialMinutes);
 
     /// <summary>The user's access state at <paramref name="nowUtc"/>: Pro > Trial > Expired.</summary>
     public PlanStatus StatusFor(User user, DateTime nowUtc)
