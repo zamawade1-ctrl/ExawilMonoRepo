@@ -203,38 +203,53 @@ class ForwardingSettings(context: Context) {
         }
 
     /**
-     * Dedup guard for check-messages, keyed by a content SIGNATURE
-     * ([SmsMoneyParser.exchangeSignature]) within a time window. The same Zaad exchange
-     * is delivered more than once (an 898 copy and a 222 copy, sometimes twice each,
-     * occasionally minutes apart with a DIFFERENT "Tixraac" ref on the copy — the case
-     * that let duplicates through the old ref-only guard, attempting a second forward
-     * and double-counting the received total). The signature is identical across every
-     * copy of one exchange regardless of its ref, so this forwards each exchange once.
+     * Dedup guard for check-messages, so each Zaad 898 exchange is forwarded exactly
+     * once. Two independent checks, because a duplicate and a genuine repeat look
+     * almost identical:
      *
-     * Returns true (forward it) only if [signature] hasn't been seen within [windowMs];
-     * a match inside the window is a duplicate and returns false. Entries older than the
-     * window are pruned on each call, so an identical exchange repeated legitimately far
-     * apart in time is still forwarded. Keeps only the most recent [MAX_SIGS] entries.
+     *  - **[ref] (the "Tixraac" transaction id) within [refWindowMs]** — the primary,
+     *    exact identity. Zaad byte-identically re-delivers the same 898 SMS (same ref),
+     *    sometimes minutes apart; that copy carries the SAME ref, so a generous ref
+     *    window collapses it. A GENUINE repeat exchange (the user really did $1 to the
+     *    same person again) always gets a NEW ref, so ref-dedup never blocks it — this
+     *    is the fix for "the 898 message arrived but nothing was forwarded", where the
+     *    old signature-only window swallowed real repeats of the same amount for 10 min.
+     *
+     *  - **[signature] within [sigWindowMs]** — a SHORT content-only guard (dollars +
+     *    shilling + counterparty, ref excluded — [SmsMoneyParser.exchangeSignature]) for
+     *    the rarer case where Zaad re-delivers the same exchange with a DIFFERENT ref.
+     *    Kept deliberately short so it only catches a near-simultaneous re-delivery and
+     *    does NOT swallow a genuine repeat made a couple of minutes later.
+     *
+     * Returns true (forward it) only if neither check finds a recent match; a match in
+     * either window is a duplicate → false. Entries older than BOTH windows are pruned.
+     * Keeps only the most recent [MAX_SIGS] entries.
      *
      * commit(), not apply(): the write must be durable BEFORE we go on to forward, so a
      * duplicate SMS that arrives after the process is recycled (Doze/low-memory kill
-     * between the two deliveries) still sees this signature on disk and is skipped.
+     * between the two deliveries) still sees this entry on disk and is skipped.
      */
     @Synchronized
-    fun markExchangeIfNew(signature: String, windowMs: Long): Boolean {
+    fun markExchangeIfNew(
+        ref: String?,
+        signature: String,
+        refWindowMs: Long,
+        sigWindowMs: Long,
+    ): Boolean {
         val now = System.currentTimeMillis()
         val existing = prefs.getString(KEY_EXCHANGE_SIGS, "").orEmpty()
-        // Each entry is "signature<SIG_SEP>timestampMs"; drop any now outside the window.
+        // Each entry is "ref<SIG_SEP>signature<SIG_SEP>timestampMs" (ref may be empty).
+        // Keep an entry while it's still inside the LONGER of the two windows.
+        val maxWindow = maxOf(refWindowMs, sigWindowMs)
         val kept = existing.split('\n').filter { it.isNotBlank() }.mapNotNull { entry ->
-            val sep = entry.lastIndexOf(SIG_SEP)
-            if (sep <= 0) return@mapNotNull null
-            val sig = entry.substring(0, sep)
-            val ts = entry.substring(sep + SIG_SEP.length).toLongOrNull() ?: return@mapNotNull null
-            if (now - ts in 0..windowMs) sig to ts else null
+            val parts = entry.split(SIG_SEP)
+            if (parts.size != 3) return@mapNotNull null
+            val ts = parts[2].toLongOrNull() ?: return@mapNotNull null
+            if (now - ts in 0..maxWindow) Triple(parts[0], parts[1], ts) else null
         }
-        if (kept.any { it.first == signature }) return false
-        val updated = (kept + (signature to now)).takeLast(MAX_SIGS)
-            .joinToString("\n") { "${it.first}$SIG_SEP${it.second}" }
+        if (isDuplicateExchange(kept, ref, signature, now, refWindowMs, sigWindowMs)) return false
+        val updated = (kept + Triple(ref.orEmpty(), signature, now)).takeLast(MAX_SIGS)
+            .joinToString("\n") { "${it.first}$SIG_SEP${it.second}$SIG_SEP${it.third}" }
         prefs.edit().putString(KEY_EXCHANGE_SIGS, updated).commit()
         return true
     }
@@ -250,6 +265,29 @@ class ForwardingSettings(context: Context) {
     }
 
     companion object {
+        /**
+         * Pure dedup decision for [markExchangeIfNew], extracted so it can be unit-tested
+         * without SharedPreferences. [kept] is the still-in-window history as
+         * (ref, signature, timestampMs). An exchange is a duplicate when its exact [ref]
+         * recurs within [refWindowMs] (Zaad's byte-identical re-delivery of the same
+         * transaction), OR its content [signature] recurs within the shorter [sigWindowMs]
+         * (a rapid different-ref re-delivery). A genuine repeat — new ref, and more than
+         * [sigWindowMs] after the last identical one — is NOT a duplicate, so it forwards.
+         */
+        fun isDuplicateExchange(
+            kept: List<Triple<String, String, Long>>,
+            ref: String?,
+            signature: String,
+            now: Long,
+            refWindowMs: Long,
+            sigWindowMs: Long,
+        ): Boolean {
+            val refDup = !ref.isNullOrEmpty() &&
+                kept.any { it.first == ref && now - it.third in 0..refWindowMs }
+            val sigDup = kept.any { it.second == signature && now - it.third in 0..sigWindowMs }
+            return refDup || sigDup
+        }
+
         private const val KEY_DESTINATION = "destination"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_INTERVAL = "interval_minutes"

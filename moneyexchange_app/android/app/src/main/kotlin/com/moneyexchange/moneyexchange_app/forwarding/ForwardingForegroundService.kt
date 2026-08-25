@@ -69,12 +69,27 @@ class ForwardingForegroundService : Service() {
      * (overlapping money operations are dangerous). But a MANUAL pull-to-refresh
      * is never dropped — if a sweep is already running it's queued via
      * [manualQueued] and runs the instant that one finishes. Periodic ticks and
-     * 898 sends simply skip when busy, since they recur on their own, so the
-     * interval timer and a manual refresh can never jam each other.
+     * 898 forwards are QUEUED when busy (never dropped — see [pendingForwards]) and
+     * drained the instant the current flow finishes, so the interval timer, a manual
+     * refresh, and an incoming exchange can never jam or lose each other.
      */
     private val sweepLock = Any()
     private var sweepRunning = false
     private var manualQueued = false
+
+    /**
+     * FIFO of check-messages 898 forwards waiting to run because another USSD flow is
+     * in progress. A forward is NEVER dropped when busy (that permanently lost the
+     * exchange — it was marked-as-forwarded then skipped): it's queued here and drained
+     * by [drainForwards] the moment the current flow finishes. Dedup is applied at
+     * drain time (when the forward truly starts), not at enqueue, so a re-delivered
+     * duplicate queued behind the original is still collapsed, and a genuine exchange
+     * is never marked without being sent. Guarded by [sweepLock].
+     */
+    private val pendingForwards = ArrayDeque<PendingForward>()
+
+    /** One queued check-messages forward: the exact amount + its dedup keys. */
+    private data class PendingForward(val amountUsd: Double, val signature: String?, val ref: String?)
 
     /**
      * When a queued manual sweep must skip the fast cached-leftover deposit and do a
@@ -220,27 +235,23 @@ class ForwardingForegroundService : Service() {
     /**
      * Check-messages direct forward: forward the exact [amountUsd] read from a Zaad
      * 898 exchange SMS — NO *800# balance check. Deduped by [signature] within a time
-     * window: the same exchange is re-delivered (sometimes minutes apart, with a
-     * different ref), so we forward each distinct exchange content at most once
-     * ([ForwardingSettings.markExchangeIfNew], atomic under [sweepLock]). [ref] only
-     * keys the ledger entries. Runs only if idle — an in-flight forward defers nothing,
-     * since the signature is only consumed once the forward actually starts — then
-     * stands the service down.
+     * window. Deduped primarily by the exchange REF (a genuine repeat of the same
+     * amount to the same person carries a NEW ref and IS forwarded), with a short
+     * signature window catching a rapid different-ref re-delivery
+     * ([ForwardingSettings.markExchangeIfNew], applied at drain-start under [sweepLock]).
+     * NEVER dropped when busy: the request is queued ([pendingForwards]) and drained the
+     * moment the current flow finishes, so an exchange that lands mid-forward isn't lost.
      */
     private fun requestDirectForward(amountUsd: Double, signature: String?, ref: String?) {
         synchronized(sweepLock) {
-            // Dedup FIRST, inside the lock, so two near-simultaneous deliveries of the
-            // same exchange can't both pass. Only consume the signature if we can start now.
-            if (signature != null &&
-                !ForwardingSettings(this).markExchangeIfNew(signature, EXCHANGE_DEDUP_WINDOW_MS)
-            ) {
-                Log.i(TAG, "Exchange sig=$signature already forwarded within window; skipping duplicate.")
-                stopIfNotAutoForwardPoller()
-                return
-            }
+            // QUEUE the forward — never drop it when busy. Dedup is applied at drain
+            // time (when it actually starts), NOT here: consuming the dedup mark now
+            // and then skipping because another flow is running would mark the exchange
+            // as forwarded without ever sending it, permanently losing it. A duplicate
+            // queued behind the original is collapsed by the drain-time dedup instead.
+            pendingForwards.addLast(PendingForward(amountUsd, signature, ref))
             if (sweepRunning) {
-                Log.i(TAG, "Forward already running; skipping this 898-triggered forward (sig=$signature).")
-                stopIfNotAutoForwardPoller()
+                Log.i(TAG, "Busy; queued 898 forward (ref=${ref ?: "?"}) to run right after the current flow.")
                 return
             }
             sweepRunning = true
@@ -250,16 +261,82 @@ class ForwardingForegroundService : Service() {
             synchronized(sweepLock) { sweepRunning = false }
             return
         }
-        h.post {
-            try {
-                withWakeLock { runDirectForward(amountUsd, ref) }
-            } catch (e: Throwable) {
-                Log.e(TAG, "898 exchange forward failed", e)
-            } finally {
-                synchronized(sweepLock) { sweepRunning = false }
-                stopIfNotAutoForwardPoller()
+        h.post { drainForwards() }
+    }
+
+    /**
+     * Drains [pendingForwards] on the worker thread, one at a time, applying the
+     * ref/signature dedup as each forward STARTS (so a duplicate that queued behind the
+     * original is collapsed here, and a genuine exchange is never marked without being
+     * sent). Loops until the queue is empty, releasing the run slot atomically with the
+     * emptiness check so a forward enqueued at that instant is either drained now or
+     * starts a fresh worker — never lost, never overlapped.
+     */
+    private fun drainForwards() {
+        try {
+            while (true) {
+                val next = synchronized(sweepLock) { pendingForwards.removeFirstOrNull() }
+                if (next == null) {
+                    val done = synchronized(sweepLock) {
+                        if (pendingForwards.isEmpty()) { sweepRunning = false; true } else false
+                    }
+                    if (done) break else continue
+                }
+                if (next.signature != null &&
+                    !ForwardingSettings(this).markExchangeIfNew(
+                        next.ref,
+                        next.signature,
+                        EXCHANGE_REF_DEDUP_WINDOW_MS,
+                        EXCHANGE_SIG_DEDUP_WINDOW_MS,
+                    )
+                ) {
+                    Log.i(TAG, "Exchange ref=${next.ref ?: "?"} sig=${next.signature} already forwarded (ref/sig window); skipping duplicate.")
+                    continue
+                }
+                try {
+                    withWakeLock { runDirectForward(next.amountUsd, next.ref) }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "898 exchange forward failed", e)
+                }
+            }
+        } catch (e: Throwable) {
+            // Safety net: never leave the run slot stuck true (which would jam every
+            // future forward and sweep). We only reach here without having released.
+            Log.e(TAG, "Forward drain crashed; releasing run slot", e)
+            synchronized(sweepLock) { sweepRunning = false }
+        }
+        stopIfNotAutoForwardPoller()
+    }
+
+    /** Posts the forward-drain worker; releases the slot + stands down if the looper's gone. */
+    private fun postDrainForwards() {
+        val h = handler
+        if (h != null) {
+            h.post { drainForwards() }
+        } else {
+            synchronized(sweepLock) { sweepRunning = false }
+            stopIfNotAutoForwardPoller()
+        }
+    }
+
+    /**
+     * End-of-worker tail for the balance-check / sweep workers: if check-messages 898
+     * forwards queued up while the worker ran (an exchange SMS arrived mid-run), KEEP
+     * the run slot and drain them; otherwise release the slot and stand the service
+     * down when it isn't the auto-forward poller. Replaces the bare
+     * `sweepRunning = false; stopIfNotAutoForwardPoller()` tail so a forward that landed
+     * during a balance check or manual sweep is never left sitting in the queue.
+     */
+    private fun finishWorkerDrainingPending() {
+        val drain = synchronized(sweepLock) {
+            if (pendingForwards.isNotEmpty()) {
+                true // keep sweepRunning = true; hand off to the drain
+            } else {
+                sweepRunning = false
+                false
             }
         }
+        if (drain) postDrainForwards() else stopIfNotAutoForwardPoller()
     }
 
     /**
@@ -341,8 +418,8 @@ class ForwardingForegroundService : Service() {
             } catch (e: Throwable) {
                 Log.e(TAG, "Balance-only check failed", e)
             } finally {
-                synchronized(sweepLock) { sweepRunning = false }
-                stopIfNotAutoForwardPoller()
+                // Drain any 898 forward that arrived during the balance check.
+                finishWorkerDrainingPending()
             }
         }
     }
@@ -392,6 +469,10 @@ class ForwardingForegroundService : Service() {
      * right after it — then releases [sweepRunning].
      */
     private fun sweepWorker() {
+        // When we exit the loop still holding the slot because a check-messages 898
+        // forward queued during the sweep (e.g. a manual "Run sweep" overlapped an
+        // exchange SMS), hand off to the forward drain instead of standing down.
+        var handOffToDrain = false
         try {
             var done = false
             while (!done) {
@@ -416,24 +497,31 @@ class ForwardingForegroundService : Service() {
                     Log.e(TAG, "Sweep iteration failed", e)
                 }
                 // Release the run slot ONLY when nothing new is queued. Done inside
-                // the lock, atomically with the stop decision, so a manual refresh
-                // that arrives at this instant is either drained by looping again or
-                // starts a fresh worker — never lost, never overlapped.
+                // the lock, atomically with the stop decision, so a manual refresh (or
+                // a queued 898 forward) that arrives at this instant is either drained
+                // by looping again / handed to the drain, or starts a fresh worker —
+                // never lost, never overlapped.
                 synchronized(sweepLock) {
                     if (!manualQueued) {
-                        sweepRunning = false
                         done = true
+                        if (pendingForwards.isNotEmpty()) {
+                            handOffToDrain = true // keep sweepRunning = true for the drain
+                        } else {
+                            sweepRunning = false
+                        }
                     }
                 }
             }
         } catch (e: Throwable) {
             // Safety net: an unexpected escape must never leave sweepRunning stuck
             // true (which would jam every future sweep). We only get here without
-            // having released above, so no successor can be running to clobber.
+            // having released above, so no successor can be running to clobber. Any
+            // queued forward isn't lost — the next exchange re-drains the queue.
             Log.e(TAG, "Sweep worker crashed; releasing run slot", e)
             synchronized(sweepLock) { sweepRunning = false }
+            handOffToDrain = false
         }
-        stopIfNotAutoForwardPoller()
+        if (handOffToDrain) postDrainForwards() else stopIfNotAutoForwardPoller()
     }
 
     /**
@@ -962,12 +1050,23 @@ class ForwardingForegroundService : Service() {
         private const val EXTRA_SIGNATURE = "exchange_signature"
 
         /**
-         * How long two deliveries of the same exchange (same content signature) are
-         * treated as duplicates. Zaad's re-delivered copies have been seen up to a few
-         * minutes apart; 10 minutes covers that comfortably while still letting a genuine
-         * repeat of the identical exchange further out be forwarded.
+         * How long the exact exchange REF (Tixraac id) is remembered as already
+         * forwarded. Zaad byte-identically re-delivers the same 898 SMS (same ref)
+         * sometimes minutes apart; a generous window collapses those. A GENUINE repeat
+         * exchange always carries a new ref, so this never blocks a real repeat — that's
+         * the fix for "the 898 message arrived but nothing was forwarded", where the old
+         * signature-only 10-minute window swallowed real repeats of the same amount.
          */
-        private const val EXCHANGE_DEDUP_WINDOW_MS = 10 * 60_000L
+        private const val EXCHANGE_REF_DEDUP_WINDOW_MS = 30 * 60_000L
+
+        /**
+         * SHORT content-signature window (dollars + shilling + counterparty, ref
+         * excluded) guarding the rarer case where Zaad re-delivers the same exchange
+         * with a DIFFERENT ref. Deliberately short — only a near-simultaneous
+         * re-delivery — so a genuine repeat of the same amount to the same person made a
+         * couple of minutes later is still forwarded rather than mistaken for a copy.
+         */
+        private const val EXCHANGE_SIG_DEDUP_WINDOW_MS = 90_000L
 
         /**
          * On [ACTION_SWEEP_NOW]: force a fresh `*800#` balance read instead of the
