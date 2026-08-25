@@ -386,8 +386,7 @@ class ForwardingForegroundService : Service() {
                 return
             }
             Log.i(TAG, "898 exchange \$$amountUsd → forwarding \$$amount (whole dollars) to $destination; no *800#.")
-            UssdSession.beginDirectSend(primary, secondary, destination)
-            val ok = performSend(destination, amount, secondary, subscriptionId)
+            val ok = performSend(destination, amount, primary, secondary, subscriptionId)
             recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok, dedupeKey = ref?.let { "fwd:$it" })
         }
     }
@@ -750,8 +749,7 @@ class ForwardingForegroundService : Service() {
                 return
             }
             Log.i(TAG, "Balance \$${UssdSession.balanceUsd} → forwarding \$$amount (whole dollars) to $destination.")
-            UssdSession.beginSend()
-            val ok = performSend(destination, amount, secondary, subscriptionId)
+            val ok = performSend(destination, amount, primary, secondary, subscriptionId)
             recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok)
         }
     }
@@ -882,25 +880,38 @@ class ForwardingForegroundService : Service() {
      * Shared by the sweep and the 898 flow; the caller must have already armed the
      * session's send step.
      */
-    private fun performSend(destination: String, amount: String, secondaryPin: String, subscriptionId: Int): Boolean {
-        if (!UssdDialer.dialSend(this, destination, amount, secondaryPin, subscriptionId)) {
-            UssdSession.finish()
-            return false
-        }
+    private fun performSend(
+        destination: String,
+        amount: String,
+        primaryPin: String,
+        secondaryPin: String,
+        subscriptionId: Int,
+    ): Boolean {
+        // Retry the whole `*806#` send when an attempt doesn't reach SEND_PIN_DONE. A
+        // `false` means the confirmation PIN was never typed (our success signal), so no
+        // money moved — re-arming the session and re-dialing is safe and recovers a forward
+        // a transient dial rejection / stall would otherwise drop. beginDirectSend re-arms
+        // the SEND_PIN step with the PINs + destination each attempt (finish() cleared them).
+        for (attempt in 1..MAX_FORWARD_ATTEMPTS) {
+            UssdSession.beginDirectSend(primaryPin, secondaryPin, destination)
+            val dialed = UssdDialer.dialSend(this, destination, amount, secondaryPin, subscriptionId)
 
-        // SEND_PIN_DONE = the confirmation PIN was auto-typed and the forward
-        // submitted; that's our success signal AND our completion point. We do NOT
-        // wait for the "you sent…" result dialog to render + auto-close: the money
-        // has already moved, and blocking on that cosmetic screen added a whole USSD
-        // round-trip (several seconds) to every forward. The IDLE-state janitor in
-        // UssdAccessibilityService dismisses that dialog — and reads the leftover
-        // balance off it — on its own accessibility events once we finish here.
-        val submitted = awaitStep(UssdSession.Step.SEND_PIN_DONE)
-        if (!submitted) {
-            Log.w(TAG, "Send confirmation not completed within the window.")
+            // SEND_PIN_DONE = the confirmation PIN was auto-typed and the forward
+            // submitted; that's our success signal AND our completion point. We do NOT
+            // wait for the "you sent…" result dialog to render + auto-close: the money
+            // has already moved, and blocking on that cosmetic screen added a whole USSD
+            // round-trip (several seconds) to every forward. The IDLE-state janitor in
+            // UssdAccessibilityService dismisses that dialog — and reads the leftover
+            // balance off it — on its own accessibility events once we finish here.
+            val submitted = dialed && awaitStep(UssdSession.Step.SEND_PIN_DONE)
+            UssdSession.finish()
+            if (submitted) return true
+
+            Log.w(TAG, "Send confirmation not completed (attempt $attempt/$MAX_FORWARD_ATTEMPTS)" +
+                if (attempt < MAX_FORWARD_ATTEMPTS) "; re-dialing." else "; giving up.")
+            if (attempt < MAX_FORWARD_ATTEMPTS) SystemClock.sleep(FORWARD_RETRY_SETTLE_MS)
         }
-        UssdSession.finish()
-        return submitted
+        return false
     }
 
     /**
@@ -915,27 +926,32 @@ class ForwardingForegroundService : Service() {
      * — done here so the dial and the arm can't race.
      */
     private fun performBankSend(primary: String, bankPin: String, amount: String, subscriptionId: Int): Boolean {
-        UssdSession.beginBankSend(primary, bankPin, amount)
-        if (!UssdDialer.dialBalanceCheck(this, subscriptionId)) { // bank deposit walk also starts at *800#
-            UssdSession.finish()
-            return false
-        }
+        // Retry the WHOLE *800# deposit walk when an attempt doesn't reach the confirm
+        // step. A `false` here means we never typed the "1 Yes" confirmation (our success
+        // signal is BANK_CONFIRM_DONE), so NO money moved — re-dialing and re-walking is
+        // safe and recovers a forward that a mid-walk USSD-session drop / MMI error /
+        // network stall would otherwise abandon (the "898 received but nothing forwarded"
+        // bug). Each attempt re-arms the session and re-dials from scratch.
+        for (attempt in 1..MAX_FORWARD_ATTEMPTS) {
+            UssdSession.beginBankSend(primary, bankPin, amount)
+            val dialed = UssdDialer.dialBalanceCheck(this, subscriptionId) // bank walk also starts at *800#
 
-        // BANK_CONFIRM_DONE = the deposit was confirmed/submitted; that's our success
-        // signal AND our completion point. The bank walk has ~7 dialogs, so give the
-        // whole sequence a generous cap; a genuinely stuck step is still caught by the
-        // per-dialog window timeout. Once confirmed we STOP here: the money has moved,
-        // so we never block the cycle on the "successfully transferred… your balance
-        // is $X" result dialog. Waiting for it used to add a full USSD round-trip (plus
-        // close retries) — several seconds — to every bank forward. The IDLE-state
-        // janitor in UssdAccessibilityService dismisses that dialog and reads the
-        // leftover balance off it on its own accessibility events after we finish.
-        val confirmed = awaitStep(UssdSession.Step.BANK_CONFIRM_DONE, BANK_AWAIT_CAP_MS)
-        if (!confirmed) {
-            Log.w(TAG, "Bank forward not confirmed within the window.")
+            // BANK_CONFIRM_DONE = the deposit was confirmed/submitted; that's our success
+            // signal AND our completion point. The bank walk has ~7 dialogs, so give the
+            // whole sequence a generous cap; a genuinely stuck step is still caught by the
+            // per-dialog window timeout, and awaitStep fails fast on a mid-walk MMI error.
+            // Once confirmed we STOP here: the money has moved, so we never block the cycle
+            // on the "successfully transferred… your balance is $X" result dialog — the
+            // IDLE-state janitor dismisses that and reads the leftover balance afterwards.
+            val confirmed = dialed && awaitStep(UssdSession.Step.BANK_CONFIRM_DONE, BANK_AWAIT_CAP_MS)
+            UssdSession.finish()
+            if (confirmed) return true
+
+            Log.w(TAG, "Bank forward not confirmed (attempt $attempt/$MAX_FORWARD_ATTEMPTS)" +
+                if (attempt < MAX_FORWARD_ATTEMPTS) "; re-dialing the whole walk." else "; giving up.")
+            if (attempt < MAX_FORWARD_ATTEMPTS) SystemClock.sleep(FORWARD_RETRY_SETTLE_MS)
         }
-        UssdSession.finish()
-        return confirmed
+        return false
     }
 
     /**
@@ -950,6 +966,11 @@ class ForwardingForegroundService : Service() {
             when {
                 UssdSession.balanceUsd != null -> return true
                 UssdSession.step == UssdSession.Step.FAILED -> return false
+                // A mid-flow MMI error (the *800# session was dropped/rejected) can't be
+                // recovered in place — bail now so the caller re-dials, instead of waiting
+                // out the whole window. The initial dial's own rejection is already handled
+                // (and cleared) inside UssdDialer, so seeing it here means a genuine drop.
+                UssdSession.mmiError -> return false
                 UssdSession.isTimedOut() -> return false
             }
             SystemClock.sleep(POLL_MS)
@@ -964,6 +985,10 @@ class ForwardingForegroundService : Service() {
             when {
                 UssdSession.step == target -> return true
                 UssdSession.step == UssdSession.Step.FAILED -> return false
+                // Mid-walk MMI error → the USSD session died and can't be driven further;
+                // fail fast so performBankSend/performSend re-dial the whole flow in ~2s
+                // rather than waiting out the 45s dialog window (the abandoned-forward bug).
+                UssdSession.mmiError -> return false
                 UssdSession.isTimedOut() -> return false
             }
             SystemClock.sleep(POLL_MS)
@@ -1099,6 +1124,18 @@ class ForwardingForegroundService : Service() {
          * below an account-id-sized number a bad parse could produce.
          */
         private const val MAX_FORWARD_USD = 100_000.0
+
+        /**
+         * How many times to (re-)run the WHOLE forward when an attempt never reaches the
+         * confirm step. A pre-confirm failure moved no money (our success signal is the
+         * confirm being typed), so re-dialing is safe — this is what makes a Zaad *800#
+         * session drop / MMI error / network stall mid-walk recover instead of abandoning
+         * the forward and leaving the amount as a leftover on the account.
+         */
+        private const val MAX_FORWARD_ATTEMPTS = 3
+
+        /** Settle between whole-forward retries, letting the radio / prior USSD session clear. */
+        private const val FORWARD_RETRY_SETTLE_MS = 2_000L
 
         /** How long a single blocking wait for a step will poll before giving up. */
         private const val AWAIT_CAP_MS = 50_000L

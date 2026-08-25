@@ -268,11 +268,19 @@ class ForwardingSettings(context: Context) {
         /**
          * Pure dedup decision for [markExchangeIfNew], extracted so it can be unit-tested
          * without SharedPreferences. [kept] is the still-in-window history as
-         * (ref, signature, timestampMs). An exchange is a duplicate when its exact [ref]
-         * recurs within [refWindowMs] (Zaad's byte-identical re-delivery of the same
-         * transaction), OR its content [signature] recurs within the shorter [sigWindowMs]
-         * (a rapid different-ref re-delivery). A genuine repeat — new ref, and more than
-         * [sigWindowMs] after the last identical one — is NOT a duplicate, so it forwards.
+         * (ref, signature, timestampMs).
+         *
+         * The Tixraac [ref] is the SOLE identity when it's present (which it always is on a
+         * real 898 SMS): an exchange is a duplicate only when the SAME ref recurs within
+         * [refWindowMs] — Zaad's byte-identical re-delivery of one transaction, which always
+         * carries the same ref. A GENUINE repeat (the user really did another $X to the same
+         * person) always gets a NEW ref, so it is NEVER a duplicate and always forwards —
+         * even seconds later, even for the identical amount + counterparty. This is the fix
+         * for the "second 898 became a leftover" bug: the old content-signature window
+         * collapsed two distinct same-amount exchanges into one and dropped the money.
+         *
+         * The content [signature] is used ONLY as a fallback when a ref couldn't be parsed
+         * ([ref] null/blank), so a ref-less copy still can't double-send within [sigWindowMs].
          */
         fun isDuplicateExchange(
             kept: List<Triple<String, String, Long>>,
@@ -282,10 +290,13 @@ class ForwardingSettings(context: Context) {
             refWindowMs: Long,
             sigWindowMs: Long,
         ): Boolean {
-            val refDup = !ref.isNullOrEmpty() &&
-                kept.any { it.first == ref && now - it.third in 0..refWindowMs }
-            val sigDup = kept.any { it.second == signature && now - it.third in 0..sigWindowMs }
-            return refDup || sigDup
+            if (!ref.isNullOrEmpty()) {
+                // Ref present → dedup on the ref alone. Distinct refs = distinct exchanges,
+                // so a genuine repeat of the same amount to the same person still forwards.
+                return kept.any { it.first == ref && now - it.third in 0..refWindowMs }
+            }
+            // No ref to key on: fall back to the short content-signature window.
+            return kept.any { it.second == signature && now - it.third in 0..sigWindowMs }
         }
 
         private const val KEY_DESTINATION = "destination"

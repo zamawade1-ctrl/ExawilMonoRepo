@@ -6,11 +6,12 @@ import org.junit.Test
 
 /**
  * Dedup decision for check-messages 898 forwards ([ForwardingSettings.isDuplicateExchange]).
- * The real device bug these lock in: the user made genuine repeat $1 exchanges to the
- * same person minutes apart (each a NEW Tixraac ref), and the old signature-only
- * 10-minute window swallowed them so nothing was forwarded. Now ref is the primary
- * identity (repeats forward) and the signature window is short (guards only a rapid
- * different-ref re-delivery).
+ * The real device bug these lock in: the user made genuine repeat $X exchanges to the
+ * same person seconds/minutes apart (each a NEW Tixraac ref) and the money was dropped as
+ * a "leftover". The Tixraac ref is now the SOLE identity when present — distinct refs are
+ * distinct exchanges and always forward, even for the identical amount + counterparty
+ * moments apart; only a re-delivered SAME ref is a duplicate. The content signature is a
+ * fallback used ONLY when no ref could be parsed.
  */
 class ExchangeDedupTest {
 
@@ -53,12 +54,17 @@ class ExchangeDedupTest {
         )
     }
 
-    /** Rapid different-ref re-delivery within the signature window → DUPLICATE (skip). */
+    /**
+     * Different ref, same amount+person, seconds apart → FORWARD (NOT a duplicate). This is
+     * the "second 898 became a leftover" fix: two distinct Zaad transactions (distinct refs)
+     * are two real exchanges, so the second one's money must still be forwarded even though
+     * the old short signature window used to swallow it.
+     */
     @Test
-    fun differentRef_sameSignature_withinSigWindow_isDuplicate() {
+    fun differentRef_sameSignature_secondsApart_isNotDuplicate() {
         val now = 1_000_000L
         val kept = listOf(Triple("15603724048", sig, now - 20_000L)) // 20s ago
-        assertTrue(
+        assertFalse(
             ForwardingSettings.isDuplicateExchange(kept, "15603785238", sig, now, refWin, sigWin),
         )
     }
