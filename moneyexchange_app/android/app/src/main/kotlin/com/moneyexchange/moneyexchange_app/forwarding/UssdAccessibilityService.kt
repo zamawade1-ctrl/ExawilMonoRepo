@@ -76,12 +76,14 @@ class UssdAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val root = rootInActiveWindow ?: return
-
-        // Only ever read/act on the system USSD dialog — never our own app UI.
-        // Our card text contains "$1 or more", which the balance parser would
-        // otherwise misread as a $1 balance and forward against.
-        if (root.packageName == packageName) return
+        // Only ever read/act on the system telephony USSD dialog. If we read whatever
+        // window is merely "active", an SMS/notification that arrives mid-sweep steals
+        // focus (the notification shade or the Messages app becomes active) and its
+        // text gets parsed as the USSD screen — e.g. a Telesom "hadhaagaagu waa 0.00
+        // dollar" SMS parsed as a $0 balance, making the sweep skip a real forward even
+        // though the true *800# balance was ≥ $1. resolveUssdRoot returns ONLY the
+        // telephony dialog (and finds it even under a heads-up notification), or null.
+        val root = resolveUssdRoot() ?: return
 
         // No cycle in flight: sweep away any leftover terminal forwarding result
         // dialog (a "you sent…" / "successfully transferred…" screen) that lingered
@@ -186,6 +188,34 @@ class UssdAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error driving USSD dialog at step ${UssdSession.step}", e)
         }
+    }
+
+    /**
+     * The root node of the system telephony USSD dialog, or null if it isn't on
+     * screen. This is the single guard that keeps us reading the *800# dialog and
+     * nothing else.
+     *
+     * Why not just [rootInActiveWindow]: when an SMS or notification lands during a
+     * sweep, the notification shade (`com.android.systemui`) or the Messages app
+     * becomes the active window, so `rootInActiveWindow` returns THAT — and its text
+     * (an SMS body, a "hadhaagaagu waa 0.00" promo) gets parsed as the USSD screen,
+     * misreading the balance and skipping a real forward. So we locate the telephony
+     * window explicitly from the interactive windows list (which still contains the
+     * dialog even when a heads-up notification is drawn over it, so we can keep
+     * driving it), and only fall back to the active window when it too is telephony.
+     * Never returns our own app window, so the balance parser can't read our card.
+     */
+    private fun resolveUssdRoot(): AccessibilityNodeInfo? {
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                if (r.packageName?.toString() in USSD_DIALOG_PACKAGES) return r
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Interactive-windows lookup failed; falling back to active window.", e)
+        }
+        val active = rootInActiveWindow ?: return null
+        return if (active.packageName?.toString() in USSD_DIALOG_PACKAGES) active else null
     }
 
     /** Logs the raw text of each distinct USSD screen, for matcher tuning. */
@@ -519,6 +549,25 @@ class UssdAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "Xawil/UssdA11y"
+
+        /**
+         * Packages that host the system USSD/MMI dialog. We read/act on a window ONLY
+         * when it belongs to one of these, so an SMS/notification that grabs focus
+         * mid-sweep (the notification shade `com.android.systemui`, or a Messages app)
+         * can never be parsed as the USSD screen. Confirmed on the target device
+         * (Samsung a06): the *800# dialog is hosted by `com.android.phone`. The rest
+         * cover the common hosts on other OEMs so the sweep doesn't silently stall
+         * where the dialog lives elsewhere.
+         */
+        private val USSD_DIALOG_PACKAGES = setOf(
+            "com.android.phone",
+            "com.android.server.telecom",
+            "com.samsung.android.app.telephonyui",
+            "com.sec.phone",
+            "com.samsung.telephony",
+            "com.mediatek.telephony",
+            "com.android.incallui",
+        )
         // Positive-button labels: EN "send"/"ok" and Somali "dir"/"haa"/"diri".
         private val SEND_LABELS = listOf("send", "ok", "dir", "diri", "haa", "sii dir")
         // Dismiss/close labels for the terminal balance screen.
@@ -575,8 +624,9 @@ class UssdAccessibilityService : AccessibilityService() {
         fun clearLeftoverResultDialog() {
             val service = instance ?: return
             service.mainHandler.post {
-                val root = service.rootInActiveWindow ?: return@post
-                if (root.packageName == service.packageName) return@post
+                // Same telephony-only guard as the event path: never touch a non-USSD
+                // window (the notification shade / Messages app that may be foreground).
+                val root = service.resolveUssdRoot() ?: return@post
                 service.dismissLeftoverResultDialog(root)
             }
         }
