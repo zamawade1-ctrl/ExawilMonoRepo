@@ -300,4 +300,49 @@ class SmsMoneyParserTest {
         assertFalse(SmsMoneyParser.isZaad898Sender("eDahab-USD"))
         assertFalse(SmsMoneyParser.isZaad898Sender("222"))
     }
+
+    // --- bankTransferUsd / bankTransferRef: the FORWARDED total is recorded off the
+    //     real Zaad "…successfully transferred $X to your bank account…" confirmation
+    //     (the exact amount that landed), deduped by its Transfer-Id. All strings are
+    //     the real on-device confirmation shape (the one the user screenshotted). ---
+
+    // The screenshotted confirmation: amount is the "$10" transferred, NOT the "630XXX23"
+    // account digits and NOT the trailing "$0.29" balance.
+    @Test
+    fun bankTransferUsd_readsTransferredAmount_notBalanceOrAccount() {
+        val sms = "[-ADEEGA SARIFKA-] Transfer-Id: 15602795163, You have successfully " +
+            "transferred \$10 to your bank account No: 630XXX23, Your Balance is \$0.29."
+        assertEquals(10.0, SmsMoneyParser.bankTransferUsd(sms)!!, 0.0001)
+        assertEquals("15602795163", SmsMoneyParser.bankTransferRef(sms))
+        assertTrue(SmsMoneyParser.isBankTransferConfirmation(sms))
+    }
+
+    // A decimal / larger confirmation still reads exactly the transferred figure.
+    @Test
+    fun bankTransferUsd_wholeAndLarger() {
+        val twelve = "[-ADEEGA SARIFKA-] Transfer-Id: 15480151408, You have successfully " +
+            "transferred \$12 to your bank account No: 630XXX23, Your Balance is \$0.01."
+        assertEquals(12.0, SmsMoneyParser.bankTransferUsd(twelve)!!, 0.0001)
+    }
+
+    // The MOBILE "sent to" confirmation and the "$X to <name>" (no "bank account")
+    // transfer are NOT bank confirmations — they must not be recorded as bank forwards.
+    @Test
+    fun bankTransferUsd_notABankConfirmation_isNull() {
+        val sentTo = "[-ADEEGA SARIFKA-] Ref:15478100832 \$1 sent to SUHAYB(252634192816), Your Balance is \$0.17."
+        assertNull(SmsMoneyParser.bankTransferUsd(sentTo))
+        assertFalse(SmsMoneyParser.isBankTransferConfirmation(sentTo))
+        val toName = "[-ADEEGA SARIFKA-] Transfer-Id: 15477606041, You have successfully " +
+            "transferred \$1 to SUHAYB, Your Balance is \$0.67"
+        assertNull(SmsMoneyParser.bankTransferUsd(toName))
+    }
+
+    // The exchange TRIGGER ("$X u sariftay") is not a bank confirmation, so recording the
+    // forward off the confirmation never collides with the trigger's received bookkeeping.
+    @Test
+    fun bankTransferUsd_exchangeTrigger_isNull() {
+        val exchange = "[-[-ADEEGA SARIFKA-]-] Tixraac: 15480615237, Waxaad  \$1 u sariftay " +
+            "SLSH11,000SUHAYB(252634480003)."
+        assertNull(SmsMoneyParser.bankTransferUsd(exchange))
+    }
 }

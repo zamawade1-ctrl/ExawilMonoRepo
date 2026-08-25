@@ -128,6 +128,44 @@ object SmsMoneyParser {
         EXCHANGE_REF.find(body)?.groupValues?.get(1)
 
     /**
+     * The Zaad 898 **bank-transfer confirmation** Zaad sends right after we deposit
+     * the swept balance to the customer's KAAFI bank account, e.g.:
+     *   "[-ADEEGA SARIFKA-] Transfer-Id: 15602795163, You have successfully
+     *    transferred $10 to your bank account No: 630XXX23, Your Balance is $0.29."
+     * This is the GROUND TRUTH of what actually landed in the bank — the dashboard's
+     * "forwarded" total is recorded off this exact `$X` (see [bankTransferUsd])
+     * rather than the amount we estimated at USSD-send time, which could double-count
+     * across retries/sweeps. Deduped by [bankTransferRef] ("Transfer-Id").
+     *
+     * The leading "$" is required so the "No: 630XXX23" account digits or the
+     * "Transfer-Id" can never be mistaken for the amount, and "to your bank account"
+     * must follow so the trailing "Your Balance is $0.29" is never read as the amount.
+     */
+    private val BANK_TRANSFER_USD =
+        Regex(
+            """successfully\s+transferred\s+\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s+to\s+your\s+bank\s+account""",
+            RegexOption.IGNORE_CASE,
+        )
+
+    /** The "Transfer-Id: <id>" reference on a bank-transfer confirmation. */
+    private val BANK_TRANSFER_REF = Regex("""transfer-?id:?\s*([0-9]+)""", RegexOption.IGNORE_CASE)
+
+    /**
+     * The exact dollar amount that landed in the bank, read from a Zaad 898
+     * "…successfully transferred $X to your bank account…" confirmation, or null if
+     * this SMS isn't that confirmation. This is the authoritative "forwarded" figure.
+     */
+    fun bankTransferUsd(body: String): Double? =
+        BANK_TRANSFER_USD.find(body)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
+
+    /** The "Transfer-Id" of a bank-transfer confirmation, used to dedup it. */
+    fun bankTransferRef(body: String): String? =
+        BANK_TRANSFER_REF.find(body)?.groupValues?.get(1)
+
+    /** True when [body] is a Zaad bank-transfer confirmation carrying a "$X … bank account". */
+    fun isBankTransferConfirmation(body: String): Boolean = bankTransferUsd(body) != null
+
+    /**
      * A stable, NEVER-NULL dedup key for an exchange SMS: the "Tixraac" transaction
      * ref when present, else a hash of the whitespace-normalized body. The same
      * exchange, double-delivered by the network, is byte-identical (same ref, same

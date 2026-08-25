@@ -733,6 +733,17 @@ class ForwardingForegroundService : Service() {
         ok: Boolean,
         dedupeKey: String? = null,
     ) {
+        // Bank forwards: a SUCCESSFUL one is recorded off Zaad's "…successfully
+        // transferred $X to your bank account…" confirmation SMS instead (the exact
+        // amount that landed, deduped by Transfer-Id — see [SmsReceiver]). Recording it
+        // here too, from the estimated send-time amount, is exactly the double-count the
+        // dashboard was showing, so we skip it. A FAILED bank forward gets no
+        // confirmation SMS, so we still record that here so the failure stays visible
+        // (and the dashboard's duplicate-Received reconciliation keeps working).
+        if (method == ForwardingMethod.BANK_ACCOUNT && ok) {
+            Log.i(TAG, "Bank forward sent (\$$amount); FORWARDED will be recorded off the confirmation SMS.")
+            return
+        }
         val dest = when {
             !destination.isNullOrBlank() -> destination
             method == ForwardingMethod.BANK_ACCOUNT -> "Bank account"
