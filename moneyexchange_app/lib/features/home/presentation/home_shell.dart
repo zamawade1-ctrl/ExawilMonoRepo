@@ -438,10 +438,12 @@ class _AppDrawer extends ConsumerWidget {
                     icon: Icons.delete_outline,
                     label: 'Delete account',
                     color: theme.colorScheme.error,
-                    onTap: () {
-                      Navigator.pop(context);
-                      confirmAndDeleteAccount(context, ref);
-                    },
+                    // Don't pop the drawer here: that deactivates this build
+                    // context, and confirmAndDeleteAccount needs a live context
+                    // to resolve the root navigator + messenger. The confirm
+                    // dialog renders above the drawer on the root navigator, and
+                    // a successful delete redirects away via the router anyway.
+                    onTap: () => confirmAndDeleteAccount(context, ref),
                   ),
                 ],
               ),
