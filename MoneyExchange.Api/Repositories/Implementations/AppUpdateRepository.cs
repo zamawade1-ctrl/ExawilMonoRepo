@@ -24,9 +24,15 @@ public class AppUpdateRepository : IAppUpdateRepository
 
         // The active release for the platform. If more than one is somehow flagged
         // active, the newest versionCode wins so a stale row can't pin an old build.
+        // The ThenByDescending(Id) is a REQUIRED stable tiebreaker: without it, two
+        // active rows (or two rows with the same VersionCode) order arbitrarily in
+        // Postgres, so this endpoint and TrackDownloadAsync could resolve to DIFFERENT
+        // rows — which shipped users a metadata versionName from one row but an APK
+        // download from a stale/older row, causing "package appears to be invalid".
         var release = await _db.AppVersions
             .Where(v => v.IsActive && v.Platform == normalized)
             .OrderByDescending(v => v.VersionCode)
+            .ThenByDescending(v => v.Id)
             .FirstOrDefaultAsync();
 
         if (release is null)
@@ -52,9 +58,13 @@ public class AppUpdateRepository : IAppUpdateRepository
         if (normalized.Length == 0)
             return ServiceResponse<string>.BadRequest("A platform is required.");
 
+        // Same ordering (incl. the stable ThenByDescending(Id) tiebreaker) as
+        // GetActiveAsync so the download redirect ALWAYS resolves to the exact same
+        // row the metadata endpoint advertised — never a different/older APK.
         var release = await _db.AppVersions
             .Where(v => v.IsActive && v.Platform == normalized)
             .OrderByDescending(v => v.VersionCode)
+            .ThenByDescending(v => v.Id)
             .FirstOrDefaultAsync();
 
         if (release is null)
