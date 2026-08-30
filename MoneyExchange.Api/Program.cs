@@ -182,35 +182,56 @@ using (var scope = app.Services.CreateScope())
         var mandatory = !bool.TryParse(builder.Configuration["AppUpdate:Android:Mandatory"], out var m) || m;
         var releaseNotes = builder.Configuration["AppUpdate:Android:ReleaseNotes"];
 
-        // Exactly one active release per platform: deactivate the rest, upsert this one.
-        foreach (var row in db.AppVersions.Where(v => v.Platform == "android" && v.IsActive))
-            row.IsActive = false;
+        // ADVANCE-ONLY: never let the startup seeder REVERT a newer active release back to an
+        // older config value. If an active android row already has a versionCode >= the one in
+        // config, leave the DB untouched. This is critical because the config lives in Render env
+        // vars that lag behind the real latest release: without this guard, every redeploy/cold
+        // start re-activated the stale env release, silently pinning users to an OLD APK (and, once
+        // field devices had inflated split-per-abi codes like 2016, no env-config APK could ever
+        // win). With the guard, a higher release set directly in the DB (or by a future higher env
+        // code) sticks across restarts.
+        var currentActiveCode = db.AppVersions
+            .Where(v => v.Platform == "android" && v.IsActive)
+            .Select(v => (long?)v.VersionCode)
+            .OrderByDescending(c => c)
+            .FirstOrDefault();
+        // Only ADVANCE: skip the whole upsert when the DB's active release is already
+        // at/ahead of the config version, so a redeploy/cold start can never revert users
+        // to an older APK. (A bare `return` here would exit the top-level program and skip
+        // app.Run(), so this must be an `if` guard, not an early return.)
+        var wouldRetreat = currentActiveCode is long active && active >= versionCode;
+        if (!wouldRetreat)
+        {
+            // Exactly one active release per platform: deactivate the rest, upsert this one.
+            foreach (var row in db.AppVersions.Where(v => v.Platform == "android" && v.IsActive))
+                row.IsActive = false;
 
-        var existing = db.AppVersions.FirstOrDefault(
-            v => v.Platform == "android" && v.VersionCode == versionCode);
-        if (existing is null)
-        {
-            db.AppVersions.Add(new MoneyExchange.Api.Models.Entities.AppVersion
+            var existing = db.AppVersions.FirstOrDefault(
+                v => v.Platform == "android" && v.VersionCode == versionCode);
+            if (existing is null)
             {
-                Platform = "android",
-                VersionName = versionName,
-                VersionCode = versionCode,
-                ApkUrl = androidApkUrl,
-                ReleaseNotes = releaseNotes,
-                Mandatory = mandatory,
-                IsActive = true,
-                ReleasedAtUtc = DateTime.UtcNow,
-            });
+                db.AppVersions.Add(new MoneyExchange.Api.Models.Entities.AppVersion
+                {
+                    Platform = "android",
+                    VersionName = versionName,
+                    VersionCode = versionCode,
+                    ApkUrl = androidApkUrl,
+                    ReleaseNotes = releaseNotes,
+                    Mandatory = mandatory,
+                    IsActive = true,
+                    ReleasedAtUtc = DateTime.UtcNow,
+                });
+            }
+            else
+            {
+                existing.IsActive = true;
+                existing.VersionName = versionName;
+                existing.ApkUrl = androidApkUrl;
+                existing.ReleaseNotes = releaseNotes;
+                existing.Mandatory = mandatory;
+            }
+            db.SaveChanges();
         }
-        else
-        {
-            existing.IsActive = true;
-            existing.VersionName = versionName;
-            existing.ApkUrl = androidApkUrl;
-            existing.ReleaseNotes = releaseNotes;
-            existing.Mandatory = mandatory;
-        }
-        db.SaveChanges();
     }
 }
 
