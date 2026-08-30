@@ -54,6 +54,17 @@ android {
                 keyPassword = keystoreProperties["keyPassword"] as String
                 storeFile = file(keystoreProperties["storeFile"] as String)
                 storePassword = keystoreProperties["storePassword"] as String
+                // Sign with ALL of v1 (JAR), v2 and v3 schemes. minSdk 24 makes AGP drop
+                // v1 by default, leaving a v2-ONLY signature — and a v2 signature covers the
+                // whole archive, so ANY corruption/truncation in transit (e.g. a >50 MB APK
+                // clipped by Supabase Storage's 50 MB object limit) makes Android's package
+                // installer reject the sideloaded APK with "App not installed as package
+                // appears to be invalid". Some Samsung sideload paths also refuse v2-only
+                // APKs outright. Enabling v1+v2+v3 makes the APK verify under whatever scheme
+                // the installing device prefers and is the standard cure for that error.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }
