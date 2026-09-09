@@ -1,11 +1,18 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- On-device auto-forwarding (Android only). See CLAUDE.md / memory
          "on-device-forwarding-direction". These let the app react to the
          incoming Zaad SMS and dial the send-money USSD with the PIN filled in. -->
     <uses-permission android:name="android.permission.RECEIVE_SMS"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
-    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+    <!-- READ_PHONE_STATE must apply on ALL API levels (the native SIM picker needs it
+         on Android 13/14). The mobile_number plugin declares it with
+         android:maxSdkVersion="29", which the manifest merger would otherwise cap us at
+         — dropping the permission on modern devices and emptying the SIM list. Strip
+         that cap so the permission is requested regardless of OS version. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"
+        tools:remove="android:maxSdkVersion"/>
     <!-- Reads each active SIM's own phone number for the SIM picker (getPhoneNumber
          on Android 13+). Separate from READ_PHONE_STATE and requested at runtime. -->
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS"/>

@@ -12,6 +12,7 @@ import androidx.annotation.NonNull
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.moneyexchange.moneyexchange_app.forwarding.BalanceEvents
+import com.moneyexchange.moneyexchange_app.forwarding.DestinationChangeNotifications
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingForegroundService
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingMethod
 import com.moneyexchange.moneyexchange_app.forwarding.ForwardingMode
@@ -44,6 +45,18 @@ class MainActivity : FlutterFragmentActivity() {
     private val channelName = "xawil/forwarding"
     private val eventsChannelName = "xawil/forwarding/events"
     private val balanceChannelName = "xawil/forwarding/balance"
+
+    /** Emits deep-link route strings (e.g. from a tapped destination-change notification). */
+    private val navChannelName = "xawil/forwarding/navigation"
+
+    /**
+     * Live sink for the deep-link navigation channel, and a one-slot buffer for a
+     * route that arrived (via the launch intent / onNewIntent) before Flutter had
+     * subscribed. When [onListen] attaches the sink we flush the buffered route, so a
+     * notification tapped while the app was closed still reaches the Dart router.
+     */
+    private var navSink: EventChannel.EventSink? = null
+    private var pendingNavRoute: String? = null
 
     /**
      * Live sink for the transactions EventChannel: while the dashboard is in the
@@ -81,15 +94,16 @@ class MainActivity : FlutterFragmentActivity() {
                         // written, so the "forwarding mode" card (mode/interval/enabled)
                         // and the "forwarding profile" card (destination/pins/sim) can
                         // each save independently without clobbering the other's fields.
-                        if (call.hasArgument("destination")) {
-                            settings.destination = call.argument<String>("destination")
+                        //
+                        // Apply the method FIRST so the destination-change logic below
+                        // knows whether this is a mobile save (only mobile uses the
+                        // pending-confirmation security flow).
+                        call.argument<Int>("forwardingMethod")?.let {
+                            settings.forwardingMethod = ForwardingMethod.fromOrdinal(it)
                         }
                         call.argument<String>("pin")?.let { settings.pin = it }
                         call.argument<String>("secondaryPin")?.let { settings.secondaryPin = it }
                         call.argument<String>("bankPin")?.let { settings.bankPin = it }
-                        call.argument<Int>("forwardingMethod")?.let {
-                            settings.forwardingMethod = ForwardingMethod.fromOrdinal(it)
-                        }
                         call.argument<Int>("intervalMinutes")?.let { settings.intervalMinutes = it }
                         // Seconds is the real scheduling unit (auto-forward can run every 30s).
                         call.argument<Int>("intervalSeconds")?.let { settings.intervalSeconds = it }
@@ -97,9 +111,65 @@ class MainActivity : FlutterFragmentActivity() {
                         call.argument<Int>("mode")?.let { settings.mode = ForwardingMode.fromOrdinal(it) }
                         call.argument<Boolean>("enabled")?.let { settings.enabled = it }
 
+                        // Destination handling. For the MOBILE method a NEW or CHANGED
+                        // number does NOT go live immediately — it enters the pending
+                        // state (see ForwardingSettings.requestDestinationChange) and the
+                        // forwarder refuses to forward until the user confirms. The BANK
+                        // path (destination arg omitted) and an UNCHANGED mobile re-save
+                        // are completely unaffected.
+                        var pendingCreated = false
+                        if (call.hasArgument("destination")) {
+                            val newDest = call.argument<String>("destination")
+                            if (settings.forwardingMethod == ForwardingMethod.MOBILE_NUMBER &&
+                                !newDest.isNullOrBlank()
+                            ) {
+                                val current = settings.destination
+                                if (newDest != current) {
+                                    settings.requestDestinationChange(current, newDest)
+                                    DestinationChangeNotifications.post(this, newDest)
+                                    pendingCreated = true
+                                }
+                                // else: unchanged re-save → leave the active number as-is.
+                            } else {
+                                // Bank (destination omitted → not here) / blank: as before.
+                                settings.destination = newDest
+                            }
+                        }
+
                         // Re-evaluate on every save: forwarding runs only when it's both
-                        // switched on AND fully configured. Enabling before the profile
-                        // is complete is fine — this flips it on as soon as it's ready.
+                        // switched on AND fully configured. A pending mobile change makes
+                        // isReady() false, so this also stands the forwarder down until
+                        // the user confirms the new number.
+                        if (settings.enabled && settings.isReady()) {
+                            ForwardingForegroundService.start(this)
+                        } else {
+                            ForwardingForegroundService.stop(this)
+                        }
+                        result.success(mapOf("pendingDestinationChange" to pendingCreated))
+                    }
+                    "getDestinationChangeLog" -> result.success(settings.destinationChangeLog())
+                    "getPendingDestinationChange" -> result.success(
+                        mapOf(
+                            "hasPending" to settings.hasPendingDestinationChange(),
+                            "oldNumber" to settings.pendingOldDestination,
+                            "newNumber" to settings.pendingDestination,
+                            "atMs" to settings.pendingChangeAtMs,
+                        ),
+                    )
+                    "confirmDestinationChange" -> {
+                        settings.confirmDestinationChange()
+                        // Now that the new number is the active destination, resume the
+                        // forwarder if everything's configured + enabled.
+                        if (settings.enabled && settings.isReady()) {
+                            ForwardingForegroundService.start(this)
+                        } else {
+                            ForwardingForegroundService.stop(this)
+                        }
+                        result.success(null)
+                    }
+                    "rejectDestinationChange" -> {
+                        settings.rejectDestinationChange()
+                        // The old number stays active; resume the forwarder for it.
                         if (settings.enabled && settings.isReady()) {
                             ForwardingForegroundService.start(this)
                         } else {
@@ -151,6 +221,11 @@ class MainActivity : FlutterFragmentActivity() {
                                 Manifest.permission.READ_PHONE_STATE,
                                 // Reads each SIM's own number for the SIM picker.
                                 Manifest.permission.READ_PHONE_NUMBERS,
+                                // Lets the destination-change alert (and the ongoing
+                                // forwarding notification) show on Android 13+. Requested
+                                // as a string so it compiles below API 33, where it's a
+                                // harmless no-op.
+                                "android.permission.POST_NOTIFICATIONS",
                             ),
                             REQ_PERMISSIONS,
                         )
@@ -283,6 +358,51 @@ class MainActivity : FlutterFragmentActivity() {
                     balanceListener = null
                 }
             })
+
+        // Deep-link navigation: a tapped notification re-launches this activity with a
+        // route extra; we forward it to Flutter here. A route that arrived before Dart
+        // subscribed is buffered and flushed on first listen (see [pendingNavRoute]).
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, navChannelName)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    navSink = events
+                    pendingNavRoute?.let { route ->
+                        events?.success(route)
+                        pendingNavRoute = null
+                    }
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    navSink = null
+                }
+            })
+
+        // Capture a deep-link route from the intent that launched the app (cold start).
+        // Buffered until the Dart side subscribes on the nav channel above.
+        readNavRoute(intent)?.let { pendingNavRoute = it }
+    }
+
+    /** Pulls the deep-link route out of an intent's extras, if present. */
+    private fun readNavRoute(intent: Intent?): String? =
+        intent?.getStringExtra(DestinationChangeNotifications.EXTRA_ROUTE)
+
+    /**
+     * Delivers a deep-link route to Flutter now if it's listening, else buffers it
+     * for [onListen] to flush.
+     */
+    private fun emitNavRoute(route: String) {
+        val sink = navSink
+        if (sink != null) sink.success(route) else pendingNavRoute = route
+    }
+
+    /**
+     * The app is singleTop, so a notification tap while it's already running delivers
+     * the deep-link here instead of a fresh launch. Forward the route to Flutter.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readNavRoute(intent)?.let { emitNavRoute(it) }
     }
 
     /**
@@ -333,6 +453,12 @@ class MainActivity : FlutterFragmentActivity() {
         // Leftover balance read off the last forward's result dialog, for the sweep card.
         "lastLeftoverBalance" to settings.lastLeftoverBalance,
         "lastLeftoverAtMs" to settings.lastLeftoverAtMs,
+        // Mobile destination-change security flow: whether a new number is awaiting
+        // confirmation, and what it is, so the UI can surface the pending state.
+        "hasPendingDestinationChange" to settings.hasPendingDestinationChange(),
+        "pendingDestination" to settings.pendingDestination,
+        "pendingOldDestination" to settings.pendingOldDestination,
+        "pendingChangeAtMs" to settings.pendingChangeAtMs,
     )
 
     private fun granted(permission: String): Boolean =

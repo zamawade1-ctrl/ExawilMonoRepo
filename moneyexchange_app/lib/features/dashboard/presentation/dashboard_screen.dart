@@ -43,8 +43,8 @@ class DashboardScreen extends ConsumerWidget {
           if (data.destinations.isEmpty)
             const _EmptyChart(message: 'No forwards in this range yet.')
           else
-            // Bank-only app now — the mobile/bank split was removed; this shows
-            // the bank-account forward totals for the range.
+            // Both methods are supported again: this shows the forward totals per
+            // destination for the range (each mobile number, plus "Bank account").
             DestinationsBreakdown(destinations: data.destinations),
           if (data.forwardedCount > 0) ...[
             const SizedBox(height: 24),

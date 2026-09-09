@@ -80,6 +80,9 @@ class ForwardingStatus {
     required this.lastAccountPhone,
     required this.lastLeftoverBalance,
     required this.lastLeftoverAtMs,
+    required this.hasPendingDestinationChange,
+    required this.pendingDestination,
+    required this.pendingOldDestination,
   });
 
   final bool hasSmsPermission;
@@ -131,6 +134,17 @@ class ForwardingStatus {
 
   /// Wall-clock millis when [lastLeftoverBalance] was captured; 0 if never.
   final int lastLeftoverAtMs;
+
+  /// Whether a NEW/CHANGED mobile number is parked awaiting the user's
+  /// confirmation. While true the native forwarder refuses to forward (mobile
+  /// method) until the change is confirmed. Always false for the bank path.
+  final bool hasPendingDestinationChange;
+
+  /// The pending new number awaiting confirmation (null when none is pending).
+  final String? pendingDestination;
+
+  /// The number that was active when the pending change was requested.
+  final String? pendingOldDestination;
 
   /// Whether the destination is a bank account (vs a mobile number).
   bool get isBankMethod => forwardingMethod == 1;
@@ -205,6 +219,10 @@ class ForwardingStatus {
         lastAccountPhone: map['lastAccountPhone'] as String?,
         lastLeftoverBalance: (map['lastLeftoverBalance'] as num?)?.toDouble(),
         lastLeftoverAtMs: (map['lastLeftoverAtMs'] as num?)?.toInt() ?? 0,
+        hasPendingDestinationChange:
+            map['hasPendingDestinationChange'] as bool? ?? false,
+        pendingDestination: map['pendingDestination'] as String?,
+        pendingOldDestination: map['pendingOldDestination'] as String?,
       );
 }
 
@@ -216,6 +234,19 @@ class ForwardingChannel {
 
   static const _channel = MethodChannel('xawil/forwarding');
   static const _balanceEvents = EventChannel('xawil/forwarding/balance');
+  static const _navEvents = EventChannel('xawil/forwarding/navigation');
+
+  /// Deep-link routes pushed by the native side (e.g. "destination_change" when a
+  /// destination-change notification is tapped, launching the app if closed). A
+  /// route that arrived before this stream is listened is buffered natively and
+  /// delivered on first subscription. Empty off Android.
+  Stream<String> navigationEvents() {
+    if (!Platform.isAndroid) return const Stream.empty();
+    return _navEvents
+        .receiveBroadcastStream()
+        .where((e) => e is String)
+        .map((e) => e as String);
+  }
 
   /// Streams the account's leftover balance the instant the native side reads it
   /// off a completed forward's result dialog, so the UI updates without a refresh.
@@ -253,7 +284,10 @@ class ForwardingChannel {
   /// retyping keeps the stored ones); they go straight to the Android Keystore
   /// and are never sent anywhere else. Setting [enabled] true with everything
   /// configured starts the sweep; setting it false stops it.
-  Future<void> saveSettings({
+  /// Returns whether this save parked a NEW/CHANGED mobile destination into the
+  /// pending-confirmation state (true only for a mobile number that differs from
+  /// the stored one). The caller uses it to redirect to the confirmation screen.
+  Future<bool> saveSettings({
     String? destination,
     String? pin,
     String? secondaryPin,
@@ -264,8 +298,8 @@ class ForwardingChannel {
     int? simSubscriptionId,
     ForwardingMode? mode,
     bool? enabled,
-  }) {
-    return _channel.invokeMethod('saveSettings', {
+  }) async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('saveSettings', {
       'destination': ?destination,
       if (pin != null && pin.isNotEmpty) 'pin': pin,
       if (secondaryPin != null && secondaryPin.isNotEmpty)
@@ -280,7 +314,37 @@ class ForwardingChannel {
       'mode': ?mode?.index,
       'enabled': ?enabled,
     });
+    return (res?['pendingDestinationChange'] as bool?) ?? false;
   }
+
+  /// The durable on-device audit trail of mobile destination-change events
+  /// (timestamp, old→new, status). Empty off Android. NOT the money ledger.
+  Future<List<Map<Object?, Object?>>> getDestinationChangeLog() async {
+    if (!Platform.isAndroid) return const [];
+    final raw = await _channel.invokeMethod<List<Object?>>(
+      'getDestinationChangeLog',
+    );
+    return (raw ?? const []).whereType<Map<Object?, Object?>>().toList();
+  }
+
+  /// The current pending mobile destination change (if any): a map with
+  /// hasPending, oldNumber, newNumber, atMs. Off Android → not pending.
+  Future<Map<Object?, Object?>> getPendingDestinationChange() async {
+    if (!Platform.isAndroid) return const {'hasPending': false};
+    final raw = await _channel.invokeMethod<Map<Object?, Object?>>(
+      'getPendingDestinationChange',
+    );
+    return raw ?? const {'hasPending': false};
+  }
+
+  /// Confirms the pending change → the new number becomes active and forwarding
+  /// to it resumes. No-op off Android.
+  Future<void> confirmDestinationChange() =>
+      _channel.invokeMethod('confirmDestinationChange');
+
+  /// Rejects the pending change → the old number stays active. No-op off Android.
+  Future<void> rejectDestinationChange() =>
+      _channel.invokeMethod('rejectDestinationChange');
 
   Future<void> requestPermissions() =>
       _channel.invokeMethod('requestPermissions');

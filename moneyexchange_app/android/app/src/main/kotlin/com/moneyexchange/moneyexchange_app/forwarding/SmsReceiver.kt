@@ -67,6 +67,22 @@ class SmsReceiver : BroadcastReceiver() {
             return
         }
 
+        // Mobile FORWARDED source of truth (mirrors the bank case above): a Zaad 898
+        // "…$X sent to…" / "…$X ayaad u dirtay…" / "transferred $X to <name>" confirmation
+        // means exactly $X actually left to the destination mobile number. Record that as
+        // the FORWARDED event — the real, confirmed amount — instead of the send-time
+        // estimate, which could count a transfer that never completed. Because that same
+        // wording is ALSO what Zaad sends for the user's OWN manual sends, we only record
+        // it when it matches a forward WE just drove (a pending mobile send); otherwise
+        // it's ignored. Bookkeeping for money that already left, so it's not gated on the
+        // plan being active, and it never triggers a forward (SENT marker). Then return.
+        if (SmsMoneyParser.isZaad898Sender(sender) &&
+            SmsMoneyParser.isMobileTransferConfirmation(body)
+        ) {
+            recordMobileConfirmation(context, settings, body)
+            return
+        }
+
         // Plan gate: an expired trial/plan does nothing — no check-messages forward.
         if (!settings.isPlanActive()) {
             Log.i(TAG, "Money SMS seen but plan expired/inactive; skipping (no USSD).")
@@ -151,6 +167,40 @@ class SmsReceiver : BroadcastReceiver() {
             provider = "Zaad",
             // Never-null key: the Transfer-Id when present, else a body hash — so a
             // re-delivered confirmation with no parseable id still can't double-count.
+            dedupeKey = "fwd:${ref ?: "b:" + body.trim().replace(Regex("\\s+"), " ").hashCode()}",
+        )
+    }
+
+    /**
+     * Records the authoritative FORWARDED event off a Zaad mobile-forward confirmation
+     * ("…$X sent to…", "…$X ayaad u dirtay…", or "transferred $X to <name>"). The amount
+     * is the exact `$X` that left to the destination mobile number.
+     *
+     * SAFETY: a "sent to" SMS is also what Zaad sends for the user's OWN manual sends, so
+     * we record it ONLY when it matches a forward WE drove — a pending mobile send parked
+     * by [ForwardingForegroundService.recordForwarded]. No match ⇒ not ours ⇒ ignored, so
+     * the dashboard's forwarded total is never inflated by unrelated sends. Deduped by the
+     * confirmation's Ref/Transfer-Id (falling back to a body hash) so a double-delivered
+     * confirmation counts once.
+     */
+    private fun recordMobileConfirmation(context: Context, settings: ForwardingSettings, body: String) {
+        val amount = SmsMoneyParser.mobileTransferUsd(body) ?: return
+        if (!settings.consumePendingMobileForward(amount)) {
+            Log.i(TAG, "Mobile 'sent to' \$$amount confirmation with no matching pending forward; not ours, ignoring.")
+            return
+        }
+        val ref = SmsMoneyParser.mobileTransferRef(body)
+        Log.i(TAG, "Mobile-forward confirmation: \$$amount left to destination (Ref=${ref ?: "?"}); recording FORWARDED.")
+        TransactionStore.record(
+            context,
+            TransactionStore.TYPE_FORWARDED,
+            amount,
+            destination = settings.destination,
+            method = ForwardingMethod.MOBILE_NUMBER.ordinal,
+            status = TransactionStore.STATUS_SUCCESS,
+            provider = "Zaad",
+            // Never-null key: the confirmation's Ref/Transfer-Id when present, else a body
+            // hash — so a re-delivered confirmation with no parseable id still can't double-count.
             dedupeKey = "fwd:${ref ?: "b:" + body.trim().replace(Regex("\\s+"), " ").hashCode()}",
         )
     }

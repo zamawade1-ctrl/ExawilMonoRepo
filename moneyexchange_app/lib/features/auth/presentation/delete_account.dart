@@ -21,24 +21,40 @@ Future<void> confirmAndDeleteAccount(BuildContext context, WidgetRef ref) async 
     builder: (context) => AlertDialog(
       icon: Icon(Icons.warning_amber_rounded, color: theme.colorScheme.error, size: 32),
       title: const Text('Delete account?'),
-      content: const Text(
-        'This permanently deletes your account, forwarding profile and transaction '
-        'history. This cannot be undone.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: theme.colorScheme.error,
-            foregroundColor: theme.colorScheme.onError,
+      // Buttons live in the content as a single Row of two equal-width buttons so
+      // Cancel and Delete always sit SIDE BY SIDE (the default `actions:` OverflowBar
+      // stacked them vertically because the error-filled Delete button is wide).
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'This permanently deletes your account, forwarding profile and transaction '
+            'history. This cannot be undone.',
           ),
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('Delete'),
-        ),
-      ],
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Cancel'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: theme.colorScheme.error,
+                    foregroundColor: theme.colorScheme.onError,
+                  ),
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Delete'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     ),
   );
 

@@ -345,4 +345,129 @@ class SmsMoneyParserTest {
             "SLSH11,000SUHAYB(252634480003)."
         assertNull(SmsMoneyParser.bankTransferUsd(exchange))
     }
+
+    // --- Somali wording of the SAME bank-transfer confirmation (added support). The
+    //     real screenshotted Somali message: "Waxaad $X ku shubtey bank account-kaaga:
+    //     <acct>, Hadhaagaaga waa $Y." It carries NO Transfer-Id. ---
+
+    // The screenshotted Somali confirmation: amount is the "$3" deposited, NOT the
+    // "644XXX00" account digits and NOT the trailing "$0.17" leftover balance.
+    @Test
+    fun bankTransferUsd_somali_readsDepositedAmount_notBalanceOrAccount() {
+        val sms = "[-ADEEGA SARIFKA-] Waxaad \$3 ku shubtey bank account-kaaga: " +
+            "644XXX00, Hadhaagaaga waa \$0.17."
+        assertEquals(3.0, SmsMoneyParser.bankTransferUsd(sms)!!, 0.0001)
+        assertTrue(SmsMoneyParser.isBankTransferConfirmation(sms))
+        // No Transfer-Id in the Somali form → ref is null; dedup falls back to a body hash.
+        assertNull(SmsMoneyParser.bankTransferRef(sms))
+    }
+
+    // Decimal / larger Somali confirmations read exactly the deposited figure.
+    @Test
+    fun bankTransferUsd_somali_decimalAndLarger() {
+        val decimal = "[-ADEEGA SARIFKA-] Waxaad \$2.5 ku shubtey bank account-kaaga: " +
+            "644XXX00, Hadhaagaaga waa \$0.01."
+        assertEquals(2.5, SmsMoneyParser.bankTransferUsd(decimal)!!, 0.0001)
+        val larger = "[-ADEEGA SARIFKA-] Waxaad \$120 ku shubtey bank account-kaaga: " +
+            "644XXX00, Hadhaagaaga waa \$1.00."
+        assertEquals(120.0, SmsMoneyParser.bankTransferUsd(larger)!!, 0.0001)
+    }
+
+    // A Somali confirmation is an outgoing/ignorable send (carries "ADEEGA SARIFKA"),
+    // so the check-messages flow never re-forwards it — same guard as the English form.
+    @Test
+    fun bankTransferUsd_somali_isOutgoingOrIgnorable() {
+        val sms = "[-ADEEGA SARIFKA-] Waxaad \$3 ku shubtey bank account-kaaga: " +
+            "644XXX00, Hadhaagaaga waa \$0.17."
+        assertTrue(SmsMoneyParser.isOutgoingOrIgnorable(sms))
+    }
+
+    // The Somali money-IN exchange ("$X u sariftay") must NOT be seen as a bank
+    // confirmation, so it never collides with the trigger's received bookkeeping.
+    @Test
+    fun bankTransferUsd_somaliExchangeTrigger_isNull() {
+        val exchange = "[-[-ADEEGA SARIFKA-]-] Tixraac: 15480615237, Waxaad  \$1 u sariftay " +
+            "SLSH11,000SUHAYB(252634480003)."
+        assertNull(SmsMoneyParser.bankTransferUsd(exchange))
+    }
+
+    // --- mobileTransferUsd / mobileTransferRef: the MOBILE-forward dashboard total is
+    //     recorded off the real Zaad "…$X sent to…" / "…$X ayaad u dirtay…" / "transferred
+    //     $X to <name>" confirmation (the exact amount that left), matched to a forward we
+    //     drove. All strings are the real on-device confirmation shapes (from the tests
+    //     above and the user's samples). ---
+
+    // English "sent to": amount is the "$1" sent, NOT the "(252634192816)" counterparty
+    // digits and NOT the trailing "$0.17" balance.
+    @Test
+    fun mobileTransferUsd_englishSentTo_readsSentAmount() {
+        val sms = "[-ADEEGA SARIFKA-] Ref:15478100832 \$1 sent to SUHAYB GUDAAL(252634192816), Your Balance is \$0.17."
+        assertEquals(1.0, SmsMoneyParser.mobileTransferUsd(sms)!!, 0.0001)
+        assertEquals("15478100832", SmsMoneyParser.mobileTransferRef(sms))
+        assertTrue(SmsMoneyParser.isMobileTransferConfirmation(sms))
+    }
+
+    // English "sent to" without a counterparty number still reads the amount.
+    @Test
+    fun mobileTransferUsd_englishSentTo_noNumber() {
+        val sms = "[-ADEEGA SARIFKA-] Ref:15474116643 \$10 sent to SUHAYB CABDIKARIIM AXMED"
+        assertEquals(10.0, SmsMoneyParser.mobileTransferUsd(sms)!!, 0.0001)
+    }
+
+    // English "transferred $X to <name>" (a person, NOT a bank account) is a mobile
+    // confirmation; the amount is the "$1", not the trailing "$0.67" balance.
+    @Test
+    fun mobileTransferUsd_englishTransferredToName_readsAmount() {
+        val sms = "[-ADEEGA SARIFKA-] Transfer-Id: 15477606041, You have successfully " +
+            "transferred \$1 to SUHAYB, Your Balance is \$0.67"
+        assertEquals(1.0, SmsMoneyParser.mobileTransferUsd(sms)!!, 0.0001)
+        assertEquals("15477606041", SmsMoneyParser.mobileTransferRef(sms))
+    }
+
+    // Somali "$X ayaad u dirtay <name>" (a DOLLAR send) is a mobile confirmation.
+    @Test
+    fun mobileTransferUsd_somaliDirtay_readsAmount() {
+        val sms = "[-ADEEGA SARIFKA-] Tix:14814703106, \$1 ayaad u dirtay SUHAYB (252634192816)"
+        assertEquals(1.0, SmsMoneyParser.mobileTransferUsd(sms)!!, 0.0001)
+        assertEquals("14814703106", SmsMoneyParser.mobileTransferRef(sms))
+    }
+
+    // CRITICAL: the BANK confirmation (English + Somali) is NOT a mobile confirmation —
+    // it's [bankTransferUsd]'s job — so the two confirmation kinds never overlap.
+    @Test
+    fun mobileTransferUsd_bankConfirmation_isNull() {
+        val english = "[-ADEEGA SARIFKA-] Transfer-Id: 15602795163, You have successfully " +
+            "transferred \$10 to your bank account No: 630XXX23, Your Balance is \$0.29."
+        assertNull(SmsMoneyParser.mobileTransferUsd(english))
+        assertFalse(SmsMoneyParser.isMobileTransferConfirmation(english))
+        val somali = "[-ADEEGA SARIFKA-] Waxaad \$3 ku shubtey bank account-kaaga: " +
+            "644XXX00, Hadhaagaaga waa \$0.17."
+        assertNull(SmsMoneyParser.mobileTransferUsd(somali))
+    }
+
+    // A SHILLING send ("SLSH2,000 ayaad u dirtay", no "$") is NOT a mobile DOLLAR
+    // confirmation — the leading "$" requirement keeps it out.
+    @Test
+    fun mobileTransferUsd_shillingSend_isNull() {
+        val slsh = "[-[--ZAAD SHILLING--]-] Tix:15433187519, SLSH 2,000 ayaad u dirtay MAXAMUUD " +
+            "CUMAR(0634779796) Tar:03/08/26 20:42:26, Hadhaagaaga:SLSH 4,262.33"
+        assertNull(SmsMoneyParser.mobileTransferUsd(slsh))
+    }
+
+    // The money-IN exchange ("$X u sariftay") is NOT a mobile confirmation, so recording
+    // the forward off the confirmation never collides with the trigger's bookkeeping.
+    @Test
+    fun mobileTransferUsd_exchangeTrigger_isNull() {
+        val exchange = "[-[-ADEEGA SARIFKA-]-] Tixraac: 15480615237, Waxaad  \$1 u sariftay " +
+            "SLSH11,000SUHAYB(252634480003)."
+        assertNull(SmsMoneyParser.mobileTransferUsd(exchange))
+    }
+
+    // A money-IN receipt ("$50 Received from…") is not a mobile confirmation either.
+    @Test
+    fun mobileTransferUsd_received_isNull() {
+        val sms = "[-ZAAD SERVICES-] Ref:15470335393 confirmed. \$50 Received from SUHAYB " +
+            "(634192816), Your New A/C Balance is \$50"
+        assertNull(SmsMoneyParser.mobileTransferUsd(sms))
+    }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../auth/presentation/auth_providers.dart';
 import '../data/forwarding_channel.dart';
 import 'forwarding_providers.dart';
 import 'widgets/forwarding_section.dart';
@@ -22,6 +23,19 @@ class _ForwardingSimCardState extends ConsumerState<ForwardingSimCard> {
   int _selected = _systemDefault;
   bool _initFromNative = false;
   bool _saving = false;
+
+  /// The first candidate that looks like a phone number (has enough digits),
+  /// trimmed — or null if none qualify. Guards against a non-numeric username
+  /// slipping in as a "number".
+  static String? _firstPhone(List<String?> candidates) {
+    for (final c in candidates) {
+      final v = c?.trim();
+      if (v == null || v.isEmpty) continue;
+      final digits = v.replaceAll(RegExp(r'[^0-9]'), '');
+      if (digits.length >= 7) return v;
+    }
+    return null;
+  }
 
   /// A human name for a saved/selected subscription id, given the current SIMs.
   static String _simLabel(int subscriptionId, List<SimCard> sims) {
@@ -66,61 +80,58 @@ class _ForwardingSimCardState extends ConsumerState<ForwardingSimCard> {
     final status = native.status;
     final sims = native.sims;
 
-    // Seed the local selection from the saved native state once it loads,
-    // dropping a stored SIM that no longer exists back to the system default.
+    // Per-SIM MSISDNs from the mobile_number package (getLine1Number), keyed by
+    // slot index — the primary source when the carrier provisioned the number.
+    final pkgNumbers = ref.watch(simNumbersProvider).value ?? const <int, String>{};
+
+    // Fallback when neither the package nor the native side has a SIM number (the
+    // common case here — the carrier never provisioned it). Best reliable sources,
+    // in order: the account number read from the *800# balance screen, then the
+    // phone the user signed up with (sign-up is phone-only, so it's their Zaad number).
+    final user = ref.watch(authControllerProvider).value;
+    final accountPhone = _firstPhone([
+      status?.lastAccountPhone,
+      user?.phoneNumber,
+      user?.username,
+    ]);
+
+    // Seed the local selection from the saved native state once it loads. A
+    // stored SIM that no longer exists (or no stored choice) falls back to the
+    // first available SIM — the "System default" option was removed, so we always
+    // land on a concrete SIM when one is listed.
     if (status != null && !_initFromNative) {
       _selected = sims.any((s) => s.subscriptionId == status.simSubscriptionId)
           ? status.simSubscriptionId
-          : _systemDefault;
+          : (sims.isNotEmpty ? sims.first.subscriptionId : _systemDefault);
       _initFromNative = true;
     }
-
-    final banner = status == null
-        ? (
-            icon: Icons.hourglass_empty,
-            text: 'Checking SIM…',
-            tone: SectionBannerTone.neutral,
-          )
-        : (
-            icon: Icons.sim_card,
-            text:
-                'Using ${_simLabel(status.simSubscriptionId, sims)} to dial the USSD.',
-            tone: SectionBannerTone.active,
-          );
 
     return ForwardingSectionCard(
       icon: Icons.sim_card_outlined,
       title: 'SIM card',
       children: [
-        SectionStatusBanner(
-          icon: banner.icon,
-          text: banner.text,
-          tone: banner.tone,
-        ),
-        const SizedBox(height: 20),
         Text(
           'Which SIM should dial the USSD?',
           style: theme.textTheme.titleMedium,
         ),
         const SizedBox(height: 12),
         // Radio-style SIM cards (same look as the forwarding-mode cards): the
-        // selected one fills green. Shows each SIM's name and number.
-        _SimRadioTile(
-          title: 'System default',
-          subtitle: 'Let the phone choose the SIM',
-          selected: _selected == _systemDefault,
-          onTap: _saving ? null : () => setState(() => _selected = _systemDefault),
-        ),
+        // selected one fills green. Shows each SIM's name and number. The number
+        // comes from the SIM when the carrier provisions it, else the account's own
+        // number read from the *800# balance screen ([status.lastAccountPhone]).
         for (final sim in sims) ...[
-          const SizedBox(height: 10),
           _SimRadioTile(
             title: sim.label,
-            subtitle: sim.number ?? 'Number unavailable',
+            subtitle: pkgNumbers[sim.slotIndex] ??
+                sim.number ??
+                accountPhone ??
+                'Number unavailable',
             selected: _selected == sim.subscriptionId,
             onTap: _saving
                 ? null
                 : () => setState(() => _selected = sim.subscriptionId),
           ),
+          const SizedBox(height: 10),
         ],
         if (sims.isEmpty) ...[
           const SizedBox(height: 12),

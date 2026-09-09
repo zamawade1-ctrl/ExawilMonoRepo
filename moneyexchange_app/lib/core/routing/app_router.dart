@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../features/auth/presentation/auth_providers.dart';
 import '../../features/auth/presentation/sign_in_screen.dart';
 import '../../features/onboarding/presentation/onboarding_gate.dart';
+import '../../features/profile/presentation/profile_screen.dart';
 import '../../features/info/presentation/about_screen.dart';
 import '../../features/info/presentation/contact_screen.dart';
 import '../../features/info/presentation/privacy_policy_screen.dart';
@@ -29,6 +30,7 @@ class AppRoutes {
   static const activation = '/activation';
   static const home = '/home';
   static const admin = '/admin';
+  static const profile = '/profile';
   static const settings = '/settings';
   static const about = '/about';
   static const contact = '/contact';
@@ -126,6 +128,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: AppRoutes.admin,
         builder: (context, state) => const AdminDashboardScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.profile,
+        builder: (context, state) => Scaffold(
+          appBar: AppBar(title: const Text('Profile')),
+          body: const ProfileScreen(),
+        ),
       ),
       GoRoute(
         path: AppRoutes.settings,

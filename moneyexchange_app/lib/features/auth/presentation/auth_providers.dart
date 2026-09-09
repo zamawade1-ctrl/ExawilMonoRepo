@@ -139,14 +139,16 @@ class AuthController extends AsyncNotifier<AppUser?> {
             newPassword: newPassword,
           );
 
-  /// Turns the app-lock PIN on or off. Turning it off clears the local PIN copy and unlocks; turning
-  /// it on drops `hasAppPin` so the router routes to the set-PIN screen.
+  /// Turns the app-lock PIN on or off. Turning it OFF only stops the app from
+  /// locking on open — it deliberately KEEPS the local PIN copy so sensitive
+  /// actions that always require the PIN (e.g. editing the forwarding
+  /// destination — see [requireAppPin]) stay protected even with the lock off.
+  /// Turning it on drops `hasAppPin` so the router routes to the set-PIN screen.
   Future<void> setPinEnabled(bool enabled) async {
-    final previous = state.value;
     final updated = await ref.read(authRepositoryProvider).setPinEnabled(enabled);
-    if (!enabled && previous != null) {
-      // No PIN any more: wipe the local copy and make sure nothing stays locked.
-      await ref.read(appPinStoreProvider).clear(previous.id);
+    if (!enabled) {
+      // Lock off: just make sure nothing stays locked. The local PIN copy is kept
+      // on purpose (the forwarding-destination gate still needs it).
       ref.read(pinLockControllerProvider.notifier).markUnlocked();
     }
     state = AsyncData(updated);

@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.0.0+5000
+version: 2.0.1+5001
 
 environment:
   sdk: ^3.10.8
@@ -54,6 +54,11 @@ dependencies:
   open_filex: ^4.5.0
   path_provider: ^2.1.5
   flutter_phone_direct_caller: ^2.2.1
+  # Reads the SIM's own MSISDN per subscription via TelephonyManager.getLine1Number —
+  # a different source than our native SubscriptionInfo.getNumber, so it can surface a
+  # number that path missed. Android-only; returns null when the carrier never
+  # provisioned the number on the SIM (we then fall back to the account phone).
+  mobile_number: ^3.0.0
   # Pinned to 11.x: permission_handler_android 14 (pulled by 12+/13) ships a build.gradle.kts that
   # fails to compile against this project's toolchain (AGP 8.11 / Kotlin 2.2 / Gradle 8.14). The
   # CALL_PHONE runtime request (Permission.phone) + openAppSettings() we use are identical on 11.x.

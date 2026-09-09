@@ -22,7 +22,9 @@ import '../../forwarding/presentation/forwarding_mode_card.dart';
 import '../../forwarding/presentation/forwarding_providers.dart';
 import '../../forwarding/presentation/forwarding_sim_card.dart';
 import '../../forwarding/presentation/widgets/auto_forward_countdown.dart';
-import '../../profile/presentation/profile_screen.dart';
+import '../../notifications/presentation/destination_change_confirm_screen.dart';
+import '../../notifications/presentation/notifications_providers.dart';
+import '../../notifications/presentation/notifications_screen.dart';
 import '../../subscription/presentation/plan_badge.dart';
 import '../../subscription/presentation/plan_countdown_ring.dart';
 import '../../transactions/presentation/transactions_screen.dart';
@@ -91,9 +93,27 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           ref.read(nativeForwardingProvider.notifier).refresh();
         }
       case 3:
-        // Profile reads the auth user; nothing to re-pull.
-        break;
+        // Notifications: re-read the on-device destination-change audit trail.
+        ref.read(destinationChangeLogProvider.notifier).refresh();
     }
+  }
+
+  /// Opens the pending destination-change confirmation screen (also switches to
+  /// the Notifications tab first). Guarded so a burst of deep-link events (or a
+  /// re-tap) can't stack multiple copies of the screen.
+  bool _confirmScreenOpen = false;
+  Future<void> _openDestinationChangeConfirm() async {
+    if (_confirmScreenOpen || !mounted) return;
+    _confirmScreenOpen = true;
+    setState(() => _selectedIndex = 3);
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const DestinationChangeConfirmScreen(),
+      ),
+    );
+    _confirmScreenOpen = false;
+    // The change was (likely) resolved — refresh the audit trail.
+    ref.read(destinationChangeLogProvider.notifier).refresh();
   }
 
   /// Calls the support line from the center call button. On Android we place the call **directly**
@@ -136,6 +156,17 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    // Deep link: a tapped destination-change notification pushes a route event
+    // (buffered natively until we subscribe, so it works from a cold launch too).
+    // HomeShell only exists once the user is fully signed in + unlocked, so acting
+    // on it here safely skips the sign-in/PIN/plan gates.
+    ref.listen(navigationEventProvider, (previous, next) {
+      final route = next.value;
+      if (route == kDestinationChangeRoute) {
+        _openDestinationChangeConfirm();
+      }
+    });
+
     return Scaffold(
       appBar: AppBar(
         centerTitle: true,
@@ -169,7 +200,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           DashboardScreen(controller: _scrollControllers[0]),
           _ForwardingTab(controller: _scrollControllers[1]),
           TransactionsScreen(controller: _scrollControllers[2]),
-          ProfileScreen(controller: _scrollControllers[3]),
+          NotificationsScreen(controller: _scrollControllers[3]),
         ],
       ),
       // A larger center call button sits in the notch, dialing the support line.
@@ -228,9 +259,9 @@ class _BottomBar extends StatelessWidget {
           _NavItem(
             index: 3,
             selectedIndex: selectedIndex,
-            icon: Icons.person_outline,
-            selectedIcon: Icons.person,
-            label: 'Profile',
+            icon: Icons.notifications_none,
+            selectedIcon: Icons.notifications,
+            label: 'Alerts',
             onSelect: onSelect,
           ),
         ],
@@ -404,7 +435,23 @@ class _AppDrawer extends ConsumerWidget {
                       onSelectTab(2);
                     },
                   ),
+                  _DrawerTile(
+                    icon: Icons.notifications_none,
+                    label: 'Alerts',
+                    selected: selectedIndex == 3,
+                    onTap: () {
+                      Navigator.pop(context);
+                      onSelectTab(3);
+                    },
+                  ),
                   const Divider(),
+                  // Profile moved off the bottom bar (which now shows Alerts) into
+                  // the drawer, so nothing was lost.
+                  _DrawerTile(
+                    icon: Icons.person_outline,
+                    label: 'Profile',
+                    onTap: () => _go(context, AppRoutes.profile),
+                  ),
                   _DrawerTile(
                     icon: Icons.info_outline,
                     label: 'About',

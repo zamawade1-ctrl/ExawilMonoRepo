@@ -188,6 +188,144 @@ class ForwardingSettings(context: Context) {
         get() = prefs.getLong(KEY_LAST_BALANCE_AT, 0L)
         set(value) = prefs.edit().putLong(KEY_LAST_BALANCE_AT, value).apply()
 
+    // --- Mobile destination-change security flow -------------------------------
+    //
+    // When the user saves a NEW or CHANGED mobile forwarding number it does NOT go
+    // live immediately: the new number is parked in [pendingDestination] while the
+    // ACTIVE [destination] deliberately stays the previously-confirmed (old) number.
+    // While a pending change exists the mobile branch of [isReady] returns false, so
+    // the forwarder refuses to forward at all until the user explicitly confirms —
+    // and, defensively, even a stray forward would go to the trusted OLD number, not
+    // the unconfirmed new one. Confirm promotes [pendingDestination] to [destination];
+    // reject discards it and leaves the old number active. Bank forwarding never sets
+    // any of this, so that path is completely unaffected.
+
+    /** The new mobile number awaiting the user's confirmation, or null when none is pending. */
+    var pendingDestination: String?
+        get() = prefs.getString(KEY_PENDING_DEST, null)
+        private set(value) = prefs.edit().putString(KEY_PENDING_DEST, value).apply()
+
+    /** The number that was active when the pending change was requested (for display / reject). */
+    var pendingOldDestination: String?
+        get() = prefs.getString(KEY_PENDING_OLD_DEST, null)
+        private set(value) = prefs.edit().putString(KEY_PENDING_OLD_DEST, value).apply()
+
+    /** Epoch-millis the pending change was requested; 0 when none is pending. */
+    var pendingChangeAtMs: Long
+        get() = prefs.getLong(KEY_PENDING_AT, 0L)
+        private set(value) = prefs.edit().putLong(KEY_PENDING_AT, value).apply()
+
+    /** True while a mobile destination change is awaiting confirmation. */
+    fun hasPendingDestinationChange(): Boolean = !pendingDestination.isNullOrBlank()
+
+    /**
+     * Parks a NEW mobile [new] number as pending (old = [old]) and appends a PENDING
+     * entry to the durable audit log. Any prior still-PENDING entry is marked REJECTED
+     * (superseded) so only the newest change is ever pending. Returns the new entry's
+     * id (its request timestamp). commit() so the pending state is durable before we go
+     * on to (not) forward. Does NOT touch [destination] — that only moves on confirm.
+     */
+    @Synchronized
+    fun requestDestinationChange(old: String?, new: String): Long {
+        val now = System.currentTimeMillis()
+        val superseded = readChangeLog().map { e ->
+            if (e.status == STATUS_PENDING) e.copy(status = STATUS_REJECTED) else e
+        }
+        val entry = ChangeLogEntry(now, now, old.orEmpty(), new, STATUS_PENDING)
+        writeChangeLog((superseded + entry).takeLast(MAX_CHANGE_LOG))
+        prefs.edit()
+            .putString(KEY_PENDING_DEST, new)
+            .putString(KEY_PENDING_OLD_DEST, old)
+            .putLong(KEY_PENDING_AT, now)
+            .commit()
+        return now
+    }
+
+    /**
+     * Confirms the pending change: promotes [pendingDestination] to the active
+     * [destination], marks the latest PENDING log entry CONFIRMED, and clears the
+     * pending fields. No-op when nothing is pending.
+     */
+    @Synchronized
+    fun confirmDestinationChange() {
+        val newDest = pendingDestination ?: return
+        markLatestPending(STATUS_CONFIRMED)
+        prefs.edit()
+            .putString(KEY_DESTINATION, newDest)
+            .remove(KEY_PENDING_DEST)
+            .remove(KEY_PENDING_OLD_DEST)
+            .remove(KEY_PENDING_AT)
+            .commit()
+    }
+
+    /**
+     * Rejects the pending change: leaves the active [destination] as the old number,
+     * marks the latest PENDING log entry REJECTED, and clears the pending fields.
+     */
+    @Synchronized
+    fun rejectDestinationChange() {
+        if (!hasPendingDestinationChange()) return
+        markLatestPending(STATUS_REJECTED)
+        prefs.edit()
+            .remove(KEY_PENDING_DEST)
+            .remove(KEY_PENDING_OLD_DEST)
+            .remove(KEY_PENDING_AT)
+            .commit()
+    }
+
+    private fun markLatestPending(status: String) {
+        val log = readChangeLog().toMutableList()
+        val idx = log.indexOfLast { it.status == STATUS_PENDING }
+        if (idx >= 0) {
+            log[idx] = log[idx].copy(status = status, updatedAtMs = System.currentTimeMillis())
+            writeChangeLog(log)
+        }
+    }
+
+    /**
+     * The durable on-device audit trail of destination-change events, oldest first,
+     * as channel-friendly maps: {id, atMs, updatedAtMs, oldNumber, newNumber, status}.
+     * A separate record from the money ledger — it never affects dashboard totals.
+     */
+    fun destinationChangeLog(): List<Map<String, Any?>> =
+        readChangeLog().map {
+            mapOf(
+                "id" to it.id,
+                "atMs" to it.id,
+                "updatedAtMs" to it.updatedAtMs,
+                "oldNumber" to it.oldNumber,
+                "newNumber" to it.newNumber,
+                "status" to it.status,
+            )
+        }
+
+    private data class ChangeLogEntry(
+        val id: Long,
+        val updatedAtMs: Long,
+        val oldNumber: String,
+        val newNumber: String,
+        val status: String,
+    )
+
+    private fun readChangeLog(): List<ChangeLogEntry> =
+        prefs.getString(KEY_CHANGE_LOG, "").orEmpty()
+            .split('\n')
+            .filter { it.isNotBlank() }
+            .mapNotNull { line ->
+                val p = line.split(LOG_SEP)
+                if (p.size != 5) return@mapNotNull null
+                val id = p[0].toLongOrNull() ?: return@mapNotNull null
+                val updated = p[1].toLongOrNull() ?: id
+                ChangeLogEntry(id, updated, p[2], p[3], p[4])
+            }
+
+    private fun writeChangeLog(entries: List<ChangeLogEntry>) {
+        val joined = entries.joinToString("\n") {
+            "${it.id}$LOG_SEP${it.updatedAtMs}$LOG_SEP${it.oldNumber}$LOG_SEP${it.newNumber}$LOG_SEP${it.status}"
+        }
+        prefs.edit().putString(KEY_CHANGE_LOG, joined).commit()
+    }
+
     /**
      * True only when we have everything needed to run a full sweep + forward.
      * Requirements differ by method: mobile needs a destination + both PINs
@@ -197,7 +335,10 @@ class ForwardingSettings(context: Context) {
     fun isReady(): Boolean =
         enabled && when (forwardingMethod) {
             ForwardingMethod.MOBILE_NUMBER ->
-                !destination.isNullOrBlank() && !pin.isNullOrBlank() && !secondaryPin.isNullOrBlank()
+                // A pending (unconfirmed) destination change hard-blocks mobile
+                // forwarding until the user confirms — see the security flow above.
+                !destination.isNullOrBlank() && !pin.isNullOrBlank() &&
+                    !secondaryPin.isNullOrBlank() && !hasPendingDestinationChange()
             ForwardingMethod.BANK_ACCOUNT ->
                 !pin.isNullOrBlank() && !bankPin.isNullOrBlank()
         }
@@ -253,6 +394,73 @@ class ForwardingSettings(context: Context) {
         prefs.edit().putString(KEY_EXCHANGE_SIGS, updated).commit()
         return true
     }
+
+    // --- Pending mobile forwards (dashboard "forwarded" is confirmation-driven) --------
+    //
+    // A mobile `*806#` forward's dashboard FORWARDED total is recorded off Zaad's
+    // "…$X sent to…" / "…$X ayaad u dirtay…" confirmation SMS — the amount that
+    // actually left — NOT the send-time estimate, so an unconfirmed/failed transfer
+    // never inflates the total (the same confirmation-driven rule the bank path uses).
+    // But a "sent to" SMS is ALSO what Zaad sends for the user's own manual sends, so
+    // we park each forward WE drive here and only count a confirmation that matches one
+    // (by amount, within the window). Bank forwarding never touches any of this.
+
+    /**
+     * Parks a mobile forward of [amount] whole dollars, just driven and now awaiting
+     * its "sent to" confirmation SMS (see [SmsReceiver.recordMobileConfirmation]). Each
+     * entry is "amountCents<sep>atMs"; stale entries past the window are pruned and the
+     * list is capped. commit() so it's durable before the confirmation can arrive.
+     */
+    @Synchronized
+    fun addPendingMobileForward(amount: String) {
+        val cents = amount.toBigDecimalOrNull()?.movePointRight(2)?.toLong() ?: return
+        val now = System.currentTimeMillis()
+        val kept = pendingMobileForwards(now)
+        val updated = (kept + Pair(cents, now)).takeLast(MAX_PENDING_FWD)
+            .joinToString("\n") { "${it.first}$PENDING_SEP${it.second}" }
+        prefs.edit().putString(KEY_PENDING_MOBILE_FWD, updated).commit()
+    }
+
+    /**
+     * Consumes ONE pending mobile forward matching [amountUsd] (within the window),
+     * returning true when found — meaning this confirmation SMS is one of OUR forwards
+     * and should be recorded as FORWARDED — or false when nothing matches, meaning the
+     * "sent to" SMS is not a forward we drove (e.g. a manual send) and must be ignored.
+     * The oldest matching entry is removed so two same-amount forwards each consume
+     * exactly one confirmation.
+     */
+    @Synchronized
+    fun consumePendingMobileForward(amountUsd: Double): Boolean {
+        val cents = Math.round(amountUsd * 100)
+        val now = System.currentTimeMillis()
+        val kept = pendingMobileForwards(now).toMutableList()
+        val idx = kept.indexOfFirst { it.first == cents }
+        if (idx < 0) {
+            // Persist the pruned list even on a miss so stale entries don't accumulate.
+            prefs.edit().putString(
+                KEY_PENDING_MOBILE_FWD,
+                kept.joinToString("\n") { "${it.first}$PENDING_SEP${it.second}" },
+            ).commit()
+            return false
+        }
+        kept.removeAt(idx)
+        prefs.edit().putString(
+            KEY_PENDING_MOBILE_FWD,
+            kept.joinToString("\n") { "${it.first}$PENDING_SEP${it.second}" },
+        ).commit()
+        return true
+    }
+
+    /** Still-in-window pending mobile forwards as (amountCents, atMs), oldest first. */
+    private fun pendingMobileForwards(now: Long): List<Pair<Long, Long>> =
+        prefs.getString(KEY_PENDING_MOBILE_FWD, "").orEmpty()
+            .split('\n').filter { it.isNotBlank() }.mapNotNull { entry ->
+                val p = entry.split(PENDING_SEP)
+                if (p.size != 2) return@mapNotNull null
+                val cents = p[0].toLongOrNull() ?: return@mapNotNull null
+                val ts = p[1].toLongOrNull() ?: return@mapNotNull null
+                if (now - ts in 0..PENDING_MOBILE_FWD_WINDOW_MS) Pair(cents, ts) else null
+            }
 
     /**
      * Wipes every stored forwarding setting — destination, all PINs, mode, method,
@@ -315,6 +523,18 @@ class ForwardingSettings(context: Context) {
         private const val KEY_LAST_BALANCE = "last_leftover_balance"
         private const val KEY_LAST_BALANCE_AT = "last_leftover_balance_at"
         private const val KEY_EXCHANGE_SIGS = "forwarded_exchange_sigs"
+        // Mobile destination-change security flow.
+        private const val KEY_PENDING_DEST = "pending_destination"
+        private const val KEY_PENDING_OLD_DEST = "pending_old_destination"
+        private const val KEY_PENDING_AT = "pending_change_at_ms"
+        private const val KEY_CHANGE_LOG = "destination_change_log"
+        const val STATUS_PENDING = "PENDING"
+        const val STATUS_CONFIRMED = "CONFIRMED"
+        const val STATUS_REJECTED = "REJECTED"
+        /** How many destination-change audit entries to retain. */
+        private const val MAX_CHANGE_LOG = 100
+        /** In-record separator for a change-log entry (a control char, never in a phone number). */
+        private const val LOG_SEP = ""
         private const val DEFAULT_INTERVAL = 1
 
         /** Default auto-forward sweep cadence when nothing has been saved yet: every 30 seconds. */
@@ -328,6 +548,19 @@ class ForwardingSettings(context: Context) {
 
         /** How many recent exchange signatures to remember for dedup. */
         private const val MAX_SIGS = 50
+
+        // Pending mobile forwards awaiting their "sent to" confirmation SMS.
+        private const val KEY_PENDING_MOBILE_FWD = "pending_mobile_forwards"
+        private const val PENDING_SEP = ""
+        private const val MAX_PENDING_FWD = 50
+
+        /**
+         * How long a mobile forward waits for its "…$X sent to…" confirmation SMS before
+         * its pending token is pruned. Generous (30 min) so a delayed confirmation still
+         * records the FORWARDED event; bounded so a never-confirmed forward's stale token
+         * can't be claimed much later by an unrelated same-amount manual send.
+         */
+        private const val PENDING_MOBILE_FWD_WINDOW_MS = 30L * 60L * 1000L
 
         /**
          * In-record separator between a stored exchange signature and its timestamp.

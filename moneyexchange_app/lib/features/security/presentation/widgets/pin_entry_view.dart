@@ -53,6 +53,8 @@ class _PinEntryViewState extends State<PinEntryView> {
 
   Future<void> _onKey(String d) async {
     if (_busy || _digits.length >= _length) return;
+    // Fire-and-forget: never await the haptic, so the digit lands on this frame
+    // and rapid taps aren't dropped waiting on the platform channel.
     HapticFeedback.selectionClick();
     setState(() {
       _digits += d;
@@ -164,7 +166,9 @@ class _Dots extends StatelessWidget {
       children: [
         for (var i = 0; i < count; i++)
           AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
+            // Snappy fill so the dot lands the instant the key is pressed —
+            // a long fill made typing feel laggy.
+            duration: const Duration(milliseconds: 60),
             margin: const EdgeInsets.symmetric(horizontal: 9),
             width: 16,
             height: 16,
@@ -238,7 +242,11 @@ class _Key extends StatelessWidget {
         shape: const CircleBorder(),
         child: InkWell(
           customBorder: const CircleBorder(),
-          onTap: onTap,
+          // Register the press on pointer-DOWN, not on release: it feels instant
+          // and never drops a digit during fast typing. onTap stays (a no-op) so
+          // the ink ripple still animates on tap.
+          onTapDown: (_) => onTap(),
+          onTap: () {},
           child: SizedBox(
             height: 64,
             child: Center(

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:mobile_number/mobile_number.dart' as mn;
 
 import '../data/forwarding_channel.dart';
 
@@ -22,6 +23,34 @@ final nativeForwardingProvider =
     AsyncNotifierProvider<NativeForwardingController, NativeForwardingState>(
       NativeForwardingController.new,
     );
+
+/// SIM MSISDNs read via the `mobile_number` package, keyed by SIM **slot index**.
+/// The package reads the number through `TelephonyManager.getLine1Number()` (per
+/// subscription) — a different source than our native `SubscriptionInfo.getNumber`
+/// — so it can surface a number that path returned blank. Android-only; a slot
+/// whose number the carrier never provisioned is simply absent from the map (the
+/// SIM picker then falls back to the account phone). Errors degrade to an empty map.
+final simNumbersProvider = FutureProvider<Map<int, String>>((ref) async {
+  if (!Platform.isAndroid) return const {};
+  try {
+    final cards = await mn.MobileNumber.getSimCards ?? const <mn.SimCard>[];
+    final out = <int, String>{};
+    for (final c in cards) {
+      final slot = c.slotIndex;
+      final number = c.number?.trim();
+      if (slot == null || number == null || number.isEmpty) continue;
+      // getLine1Number sometimes omits the country prefix; prepend it when the
+      // package parsed one and the number isn't already in international form.
+      final prefix = c.countryPhonePrefix?.trim();
+      out[slot] = (prefix != null && prefix.isNotEmpty && !number.startsWith('+') && !number.startsWith(prefix))
+          ? '$prefix$number'
+          : number;
+    }
+    return out;
+  } catch (_) {
+    return const {};
+  }
+});
 
 /// Live stream of the account's leftover balance, pushed by the native side the
 /// instant it reads it off a completed forward's result dialog. The sweep card
@@ -108,7 +137,10 @@ class NativeForwardingController extends AsyncNotifier<NativeForwardingState> {
   /// [forwardingMethod] (0 = mobile, 1 = bank) selects which forward path the
   /// on-device sweep uses; [bankPin] is the customer's bank PIN, needed only for
   /// the bank-account method (typed on the *800# deposit walk).
-  Future<void> saveDestination({
+  /// Returns whether the save parked a NEW/CHANGED mobile number into the
+  /// pending-confirmation state (true only for a changed mobile number), so the
+  /// caller can redirect to the confirmation screen.
+  Future<bool> saveDestination({
     required int forwardingMethod,
     String? destination,
     String? pin,
@@ -116,7 +148,7 @@ class NativeForwardingController extends AsyncNotifier<NativeForwardingState> {
     String? bankPin,
     required int intervalSeconds,
   }) async {
-    await _channel.saveSettings(
+    final pendingCreated = await _channel.saveSettings(
       forwardingMethod: forwardingMethod,
       destination: destination,
       pin: pin,
@@ -124,6 +156,20 @@ class NativeForwardingController extends AsyncNotifier<NativeForwardingState> {
       bankPin: bankPin,
       intervalSeconds: intervalSeconds,
     );
+    await refresh();
+    return pendingCreated;
+  }
+
+  /// Confirms the pending mobile destination change (new number goes live), then
+  /// refreshes so the card/status reflect the now-active destination.
+  Future<void> confirmDestinationChange() async {
+    await _channel.confirmDestinationChange();
+    await refresh();
+  }
+
+  /// Rejects the pending mobile destination change (old number stays active).
+  Future<void> rejectDestinationChange() async {
+    await _channel.rejectDestinationChange();
     await refresh();
   }
 

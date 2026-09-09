@@ -147,16 +147,41 @@ object SmsMoneyParser {
             RegexOption.IGNORE_CASE,
         )
 
+    /**
+     * The **Somali** wording of the same Zaad 898 bank-transfer confirmation, shown
+     * when the customer's Zaad is set to Somali, e.g.:
+     *   "[-ADEEGA SARIFKA-] Waxaad $3 ku shubtey bank account-kaaga: 644XXX00,
+     *    Hadhaagaaga waa $0.17."
+     * "$X ku shub… bank account" = "you deposited $X into your bank account". Same
+     * meaning and same authoritative amount as the English form — the only new thing
+     * is the wording. The leading "$" plus the required "ku shub… bank account"
+     * context keeps the account digits ("644XXX00") and the trailing leftover balance
+     * ("Hadhaagaaga waa $0.17") from ever being read as the amount, and "ku shub…"
+     * (deposited INTO) never matches the "u sariftay" money-in exchange trigger. The
+     * "shub\w*" stem tolerates spelling variants (shubtey/shubtay). This Somali
+     * confirmation carries NO "Transfer-Id", so it dedups on a body hash (see
+     * [dedupKey] fallback in [recordBankConfirmation]).
+     */
+    private val BANK_TRANSFER_USD_SO =
+        Regex(
+            """waxaad\s+\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s+ku\s+shub\w*\s+bank\s+account""",
+            RegexOption.IGNORE_CASE,
+        )
+
     /** The "Transfer-Id: <id>" reference on a bank-transfer confirmation. */
     private val BANK_TRANSFER_REF = Regex("""transfer-?id:?\s*([0-9]+)""", RegexOption.IGNORE_CASE)
 
     /**
      * The exact dollar amount that landed in the bank, read from a Zaad 898
-     * "…successfully transferred $X to your bank account…" confirmation, or null if
-     * this SMS isn't that confirmation. This is the authoritative "forwarded" figure.
+     * bank-transfer confirmation — the English "…successfully transferred $X to your
+     * bank account…" form OR the Somali "…Waxaad $X ku shubtey bank account-kaaga…"
+     * form — or null if this SMS isn't that confirmation. This is the authoritative
+     * "forwarded" figure. English is tried first (unchanged); the Somali wording is a
+     * pure addition, so an English confirmation parses exactly as before.
      */
     fun bankTransferUsd(body: String): Double? =
-        BANK_TRANSFER_USD.find(body)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
+        (BANK_TRANSFER_USD.find(body) ?: BANK_TRANSFER_USD_SO.find(body))
+            ?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
 
     /** The "Transfer-Id" of a bank-transfer confirmation, used to dedup it. */
     fun bankTransferRef(body: String): String? =
@@ -164,6 +189,61 @@ object SmsMoneyParser {
 
     /** True when [body] is a Zaad bank-transfer confirmation carrying a "$X … bank account". */
     fun isBankTransferConfirmation(body: String): Boolean = bankTransferUsd(body) != null
+
+    /**
+     * The Zaad 898 **mobile-forward confirmation** Zaad sends right after we forward the
+     * swept/exchanged dollars to the customer's destination MOBILE number via `*806#`.
+     * Three real on-device wordings, all carrying a leading "$" so a shilling send
+     * (prefixed "SLSH", never "$") can never be read as the amount:
+     *   - English "sent to":     "…$1 sent to SUHAYB GUDAAL(252634192816), Your Balance is $0.17."
+     *   - English "transferred":  "…transferred $1 to SUHAYB, Your Balance is $0.67"   (to a NAME,
+     *     NOT "…to your bank account" — that's the bank form, excluded below)
+     *   - Somali "ayaad u dirtay": "…$1 ayaad u dirtay SUHAYB (252634192816)"
+     *
+     * This is the mobile counterpart of [bankTransferUsd]: the dashboard's "forwarded"
+     * total is recorded off this exact `$X` (the amount that actually left the account),
+     * NOT the amount we estimated at USSD-send time — so an unconfirmed/failed forward
+     * never inflates the total. The leading "$" plus the required "sent to" / "u dirtay"
+     * / "transferred … to" context keeps the counterparty phone digits ("(252634192816)")
+     * and the trailing leftover balance ("Your Balance is $0.17") from ever being read as
+     * the amount. See [SmsReceiver.recordMobileConfirmation], which additionally matches
+     * it to a forward WE drove so a user's own manual send is never counted.
+     */
+    private val MOBILE_SENT_USD =
+        Regex("""\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s+sent\s+to""", RegexOption.IGNORE_CASE)
+    private val MOBILE_DIRTAY_USD =
+        Regex("""\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s+ayaad\s+u\s+dirtay""", RegexOption.IGNORE_CASE)
+    // "transferred $X to <name>" — the negative lookahead excludes the bank form
+    // ("…to your bank account"), which is handled by [bankTransferUsd] instead.
+    private val MOBILE_TRANSFERRED_USD =
+        Regex(
+            """transferred\s+\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s+to\s+(?!your\s+bank\s+account)""",
+            RegexOption.IGNORE_CASE,
+        )
+
+    /** The "Ref:" / "Transfer-Id:" / "Tixraac:" / "Tix:" id on a mobile-forward confirmation. */
+    private val MOBILE_TRANSFER_REF =
+        Regex("""(?:transfer-?id|tixraac|tix|ref)\s*:?\s*([0-9]+)""", RegexOption.IGNORE_CASE)
+
+    /**
+     * The exact dollar amount that left to the destination mobile number, read from a
+     * Zaad 898 mobile-forward confirmation ("$X sent to…", "$X ayaad u dirtay…", or
+     * "transferred $X to <name>"), or null if this SMS isn't that confirmation. A bank
+     * confirmation is explicitly excluded (it's [bankTransferUsd]'s job), so the two
+     * confirmation kinds never overlap.
+     */
+    fun mobileTransferUsd(body: String): Double? {
+        if (isBankTransferConfirmation(body)) return null
+        return (MOBILE_SENT_USD.find(body) ?: MOBILE_DIRTAY_USD.find(body) ?: MOBILE_TRANSFERRED_USD.find(body))
+            ?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
+    }
+
+    /** The ref of a mobile-forward confirmation, used to dedup the FORWARDED ledger entry. */
+    fun mobileTransferRef(body: String): String? =
+        MOBILE_TRANSFER_REF.find(body)?.groupValues?.get(1)
+
+    /** True when [body] is a Zaad mobile-forward confirmation ("$X sent to / u dirtay / transferred to"). */
+    fun isMobileTransferConfirmation(body: String): Boolean = mobileTransferUsd(body) != null
 
     /**
      * A stable, NEVER-NULL dedup key for an exchange SMS: the "Tixraac" transaction

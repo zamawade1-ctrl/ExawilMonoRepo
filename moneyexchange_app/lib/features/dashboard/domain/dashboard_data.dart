@@ -1,12 +1,10 @@
 import 'device_transaction.dart';
 
-/// The app forwards to a **bank account only** now — the mobile-number option was
-/// removed. Mobile-number forwards (`method == 0`) from before the change are
-/// hidden from every display (dashboard + Transactions); received money-in events
-/// and bank forwards are always kept. Filter the ledger through this before
-/// showing it so no mobile-forwarding data appears anywhere.
-bool isDisplayedTransaction(DeviceTransaction t) =>
-    !(t.isForwarded && !t.isBankMethod);
+/// Both forwarding methods are supported again (mobile number via `*806#` and
+/// bank account via the `*800#` deposit walk), so every ledger entry — received
+/// money-in events plus mobile and bank forwards — is displayed. Kept as a single
+/// filter hook so the dashboard + Transactions screens share one policy.
+bool isDisplayedTransaction(DeviceTransaction t) => true;
 
 /// Which slice of history the dashboard charts show. `day` carries a specific
 /// picked calendar date; the rest are relative presets.
