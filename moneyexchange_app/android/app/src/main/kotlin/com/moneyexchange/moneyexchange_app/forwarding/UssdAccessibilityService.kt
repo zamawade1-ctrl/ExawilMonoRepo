@@ -176,10 +176,7 @@ class UssdAccessibilityService : AccessibilityService() {
                     typeAndSend(root, UssdSession.bankPin) {
                         UssdSession.advanceBank(UssdSession.Step.BANK_BANK_PIN, UssdSession.Step.BANK_CONFIRM)
                     }
-                UssdSession.Step.BANK_CONFIRM ->
-                    typeAndSend(root, UssdSession.BANK_CONFIRM_OPTION) {
-                        UssdSession.advanceBank(UssdSession.Step.BANK_CONFIRM, UssdSession.Step.BANK_CONFIRM_DONE)
-                    }
+                UssdSession.Step.BANK_CONFIRM -> confirmBankTransfer(root)
                 UssdSession.Step.BANK_CONFIRM_DONE ->
                     closeResultDialog(root, captureLeftover = true) { UssdSession.onBankResultClosed() }
 
@@ -250,6 +247,36 @@ class UssdAccessibilityService : AccessibilityService() {
         UssdSession.onMenuBypassedToBalance()
         readBalance(root)
     }
+
+    /**
+     * Confirms the bank deposit ("1 Yes") ONLY when the confirmation dialog echoes
+     * the exact amount we intended to send. This is the last line of defence for
+     * money safety: the bank amount field accepts a decimal (so we can zero the
+     * account to the cent), but if any ROM/rail were to mangle "5.18" into "518", the
+     * confirm screen would show "$518" — a mismatch we refuse to confirm, so no wrong
+     * amount can ever be transferred. A partial frame that hasn't rendered the amount
+     * yet is just waited out (return without failing); a real mismatch fails the
+     * session so [performBankSend] re-dials the whole walk from scratch.
+     */
+    private fun confirmBankTransfer(root: AccessibilityNodeInfo) {
+        val text = collectText(root)
+        val shown = firstDollarAmount(text)
+        if (shown == null) return // amount not rendered yet — wait for a fuller frame
+        val expected = UssdSession.forwardAmount?.toDoubleOrNull()
+        if (expected == null || kotlin.math.abs(shown - expected) >= 0.005) {
+            Log.w(TAG, "Bank confirm amount mismatch (shown=$shown, expected=${UssdSession.forwardAmount}); " +
+                "NOT confirming. Screen: ${text.replace('\n', '|')}")
+            UssdSession.fail()
+            return
+        }
+        typeAndSend(root, UssdSession.BANK_CONFIRM_OPTION) {
+            UssdSession.advanceBank(UssdSession.Step.BANK_CONFIRM, UssdSession.Step.BANK_CONFIRM_DONE)
+        }
+    }
+
+    /** Extracts the first "$<number>" (whole or decimal) from [text], or null. */
+    private fun firstDollarAmount(text: String): Double? =
+        Regex("""\$\s*([0-9]+(?:\.[0-9]+)?)""").find(text)?.groupValues?.get(1)?.toDoubleOrNull()
 
     override fun onInterrupt() {}
 

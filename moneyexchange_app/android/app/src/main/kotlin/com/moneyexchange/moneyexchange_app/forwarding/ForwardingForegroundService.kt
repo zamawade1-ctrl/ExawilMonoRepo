@@ -353,7 +353,10 @@ class ForwardingForegroundService : Service() {
             return
         }
         val subscriptionId = settings.simSubscriptionId
-        val amount = computeForwardAmount(amountUsd) ?: return
+        // Bank can forward to the cent (real numeric amount field); mobile *806 is
+        // whole-dollar only (it strips the decimal separator).
+        val allowCents = settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT
+        val amount = computeForwardAmount(amountUsd, allowCents) ?: return
 
         // The exchanged dollars are money in — log RECEIVED, paired with FORWARDED below.
         // Key the RECEIVED by the exchange ref (recv:<ref>) so a double-delivered 898 can
@@ -375,7 +378,7 @@ class ForwardingForegroundService : Service() {
                 Log.w(TAG, "898 exchange bank forward but no bank PIN stored; skipping.")
                 return
             }
-            Log.i(TAG, "898 exchange \$$amountUsd → bank-forwarding \$$amount (whole dollars); no *800#.")
+            Log.i(TAG, "898 exchange \$$amountUsd → bank-forwarding \$$amount (to the cent); no *800#.")
             val ok = performBankSend(primary, bankPin, amount, subscriptionId)
             recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok, dedupeKey = ref?.let { "fwd:$it" })
         } else {
@@ -484,7 +487,7 @@ class ForwardingForegroundService : Service() {
                     manualForceFresh = false
                 }
                 try {
-                    withWakeLock { runOneSweep(wasManual, forceFresh) }
+                    withWakeLock { runOneSweepWithInlineRetries(wasManual, forceFresh) }
                     if (wasManual) {
                         val settings = ForwardingSettings(this)
                         if (settings.enabled && settings.mode == ForwardingMode.AUTO_FORWARD) {
@@ -577,7 +580,28 @@ class ForwardingForegroundService : Service() {
         val intervalMs = ForwardingSettings(this).intervalSeconds * 1000L
         val now = SystemClock.elapsedRealtime()
         val next = (anchorElapsedMs + intervalMs).coerceAtLeast(now + MIN_TICK_SLACK_MS)
+        scheduleTickAt(next)
+    }
 
+    /**
+     * After a forward couldn't complete (balance read failed after retries, or a send
+     * never reached its confirm step), re-sweep SOON — [QUICK_RETRY_MS], not a whole
+     * interval — so a ≥ $1 balance is never stranded waiting out the poll cadence.
+     * Replaces the pending normal tick (same PendingIntent); once the retry runs and
+     * succeeds it reschedules the regular interval again. Only for the auto-forward
+     * poller (message-check mode has no timer).
+     */
+    private fun scheduleQuickRetryTick() {
+        val settings = ForwardingSettings(this)
+        if (!(settings.enabled && settings.mode == ForwardingMode.AUTO_FORWARD)) return
+        val next = SystemClock.elapsedRealtime() + QUICK_RETRY_MS
+        Log.i(TAG, "Forward incomplete; scheduling a quick retry tick in ${QUICK_RETRY_MS / 1000}s.")
+        scheduleTickAt(next)
+    }
+
+    /** Schedules the tick alarm at an exact elapsed-realtime moment, Doze-piercing. */
+    private fun scheduleTickAt(next: Long) {
+        val now = SystemClock.elapsedRealtime()
         val am = getSystemService(AlarmManager::class.java)
         val pi = tickPendingIntent(next)
         try {
@@ -656,12 +680,46 @@ class ForwardingForegroundService : Service() {
      * Runs exactly one balance-check → (maybe) forward cycle, blocking on this
      * background thread while the accessibility service drives the dialogs.
      */
-    private fun runOneSweep(isManual: Boolean, forceFresh: Boolean = false) {
+    /**
+     * Runs [runOneSweep] and, when it reports [SweepOutcome.RETRY_SOON] (a ≥ $1
+     * balance was present but the read/forward didn't complete), RE-SWEEPS INLINE —
+     * right here, still inside the caller's [withWakeLock] so the CPU stays awake —
+     * up to [MAX_INLINE_SWEEP_RETRIES] times with a short settle between tries.
+     *
+     * ## Why inline, not a scheduled alarm
+     * The previous design scheduled a +15s "quick retry" alarm. But once the screen
+     * goes idle the device enters Doze, and Android throttles an app's
+     * `setExactAndAllowWhileIdle` alarms to roughly ONCE PER 9 MINUTES — so the 15s
+     * retry silently slipped to ~9 minutes later, stranding a ≥ $1 balance the whole
+     * time (observed on-device: an 18:00 failure didn't re-forward until 18:09).
+     * Retrying inside the still-held wakelock sidesteps Doze entirely: the money is
+     * re-forwarded within seconds regardless of screen state. If every inline retry
+     * is exhausted we fall back to a scheduled retry (which still helps whenever the
+     * device ISN'T dozing) and, ultimately, the normal interval tick.
+     */
+    private fun runOneSweepWithInlineRetries(isManual: Boolean, forceFresh: Boolean) {
+        for (attempt in 1..MAX_INLINE_SWEEP_RETRIES) {
+            val outcome = runOneSweep(isManual, forceFresh)
+            if (outcome == SweepOutcome.DONE) return
+            if (attempt < MAX_INLINE_SWEEP_RETRIES) {
+                Log.i(TAG, "Forward incomplete (≥ \$1 not sent); re-sweeping inline in " +
+                    "${INLINE_RETRY_SETTLE_MS / 1000}s (retry $attempt/${MAX_INLINE_SWEEP_RETRIES - 1}).")
+                SystemClock.sleep(INLINE_RETRY_SETTLE_MS)
+            }
+        }
+        // Inline retries exhausted and a ≥ $1 balance may still be sitting there.
+        // Schedule a quick retry too (fires promptly whenever the device isn't dozing),
+        // with the normal interval tick as the final backstop.
+        Log.w(TAG, "Forward still incomplete after $MAX_INLINE_SWEEP_RETRIES inline attempts; scheduling a fallback retry.")
+        scheduleQuickRetryTick()
+    }
+
+    private fun runOneSweep(isManual: Boolean, forceFresh: Boolean = false): SweepOutcome {
         val settings = ForwardingSettings(this)
         val primary = settings.pin
         if (!settings.isReady() || primary == null) {
             Log.w(TAG, "Sweep requested but settings incomplete/disabled; skipping.")
-            return
+            return SweepOutcome.DONE
         }
         val subscriptionId = settings.simSubscriptionId
 
@@ -683,39 +741,39 @@ class ForwardingForegroundService : Service() {
             settings.lastLeftoverBalance != null
         ) {
             runFastBankSweep(settings, primary, subscriptionId)
-            return
+            return SweepOutcome.DONE
         }
 
         Log.i(TAG, "Starting balance sweep on sub=$subscriptionId (manual=$isManual).")
         // Phase 1 — balance check, identical for both methods: *800# → primary PIN →
-        // menu option 1 → read balance + account number. The session's destination /
-        // secondary PIN are unused for bank, so pass placeholders there.
-        UssdSession.beginBalanceCheck(primary, settings.secondaryPin ?: "", settings.destination ?: "")
-        if (!UssdDialer.dialBalanceCheck(this, subscriptionId)) {
+        // menu option 1 → read balance + account number. RETRIED end-to-end within
+        // this same tick: a transient *800# read miss (a slow-rendering dialog, a
+        // focus-stealing notification frame, an MMI rejection) re-dials rather than
+        // aborting the cycle and stranding a ≥ $1 balance until the next interval —
+        // the root of the intermittent "checks the balance but sometimes doesn't
+        // forward" skip. The read moves no money, so re-dialing *800# is always safe.
+        val balance = readFreshBalanceWithRetries(primary, settings, subscriptionId)
+        if (balance == null) {
+            Log.w(TAG, "Balance read failed after $MAX_BALANCE_READ_ATTEMPTS attempts.")
             UssdSession.finish()
-            return
-        }
-
-        // Wait until the balance has actually been READ. The balance-dialog close
-        // that follows is best-effort and must NOT gate the forward: a stalled close
-        // (its confirming accessibility frame never arrives) used to abort the whole
-        // cycle right here, so a balance ≥ $1 was seen but never forwarded — the
-        // intermittent "checks the balance, finds > $1, skips the forward, works a
-        // few attempts later" bug. Now we forward whenever the balance was captured.
-        if (!awaitBalanceRead()) {
-            Log.w(TAG, "Balance check timed out / failed; aborting cycle.")
-            UssdSession.finish()
-            return
+            // A ≥ $1 balance may still be sitting there — ask the caller to re-sweep
+            // NOW (inline, still holding the wakelock) so a run of transient read
+            // misses can't strand the money.
+            return SweepOutcome.RETRY_SOON
         }
         // As soon as the balance is READ we move straight to the forward — no wait.
         // The leftover balance dialog is static (it fires no accessibility events,
         // so it can't be closed here anyway) and the fresh *800#/*806# dial below
         // supersedes it, so waiting for it to close was pure dead time (~6s) between
         // "balance confirmed" and "money forwarded". Forward immediately instead.
-        val amount = computeForwardAmount(UssdSession.balanceUsd)
+        // Bank forwards go through a real numeric "enter amount" dialog that accepts a
+        // decimal, so they zero the account to the cent; mobile *806 strips the decimal
+        // separator (a 100x over-send risk) so it can only forward whole dollars.
+        val allowCents = settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT
+        val amount = computeForwardAmount(balance, allowCents)
         if (amount == null) {
             UssdSession.finish()
-            return
+            return SweepOutcome.DONE // below $1 / above cap: nothing to forward, not a failure
         }
         // The balance we're about to forward is money that has arrived on the
         // account — log it as RECEIVED so the dashboard's received chart reflects
@@ -728,30 +786,47 @@ class ForwardingForegroundService : Service() {
         // our own "transferred to bank" confirmation isn't a trigger. So a ≥ $1
         // balance is ALWAYS forwarded right away, and a stale re-read can't double-send.
 
-        // Phase 2 — forward the swept balance, by destination method.
+        // Phase 2 — forward the swept balance, by destination method. A pre-confirm
+        // failure moved no money but left the ≥ $1 balance sitting there, so we report
+        // RETRY_SOON and the caller re-sweeps immediately (inline, still under the
+        // wakelock) instead of waiting a whole interval or a Doze-throttled alarm.
         if (settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT) {
             val bankPin = settings.bankPin
             if (bankPin == null) {
                 Log.w(TAG, "Bank method selected but no bank PIN stored; skipping forward.")
                 UssdSession.finish()
-                return
+                return SweepOutcome.DONE
             }
-            Log.i(TAG, "Balance \$${UssdSession.balanceUsd} → bank-forwarding \$$amount (whole dollars).")
+            Log.i(TAG, "Balance \$$balance → bank-forwarding \$$amount (to the cent).")
             val ok = performBankSend(primary, bankPin, amount, subscriptionId)
             // Bank forwards go to the KAAFI bank account, NOT settings.destination
             // (which may hold a leftover mobile number) — label it as such.
             recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok)
+            return if (ok) SweepOutcome.DONE else SweepOutcome.RETRY_SOON
         } else {
             val destination = settings.destination
             val secondary = settings.secondaryPin
             if (destination == null || secondary == null) {
                 UssdSession.finish()
-                return
+                return SweepOutcome.DONE
             }
-            Log.i(TAG, "Balance \$${UssdSession.balanceUsd} → forwarding \$$amount (whole dollars) to $destination.")
+            Log.i(TAG, "Balance \$$balance → forwarding \$$amount (whole dollars) to $destination.")
             val ok = performSend(destination, amount, primary, secondary, subscriptionId)
             recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok)
+            return if (ok) SweepOutcome.DONE else SweepOutcome.RETRY_SOON
         }
+    }
+
+    /**
+     * Outcome of one [runOneSweep] pass, so the worker can retry INLINE (while still
+     * holding the wakelock) instead of scheduling a fresh alarm that Doze throttles.
+     */
+    private enum class SweepOutcome {
+        /** Forwarded, or nothing to forward (< $1), or a config gap — nothing more to do now. */
+        DONE,
+
+        /** A ≥ $1 balance was present but the read/forward didn't complete — re-sweep now. */
+        RETRY_SOON,
     }
 
     /**
@@ -776,7 +851,8 @@ class ForwardingForegroundService : Service() {
      */
     private fun runFastBankSweep(settings: ForwardingSettings, primary: String, subscriptionId: Int) {
         val known = settings.lastLeftoverBalance
-        val amount = computeForwardAmount(known)
+        // Fast sweep is bank-only, so forward to the cent and zero the account.
+        val amount = computeForwardAmount(known, allowCents = true)
         if (amount == null) {
             // Below \$1 (or unknown): nothing to forward. computeForwardAmount logged why.
             return
@@ -789,7 +865,7 @@ class ForwardingForegroundService : Service() {
         // Money leaving the account — log RECEIVED, paired with the FORWARDED event
         // below, mirroring the fresh-read sweep so the dashboard reflects it.
         TransactionStore.record(this, TransactionStore.TYPE_RECEIVED, amount.toDouble(), provider = "Zaad")
-        Log.i(TAG, "Fast bank sweep: forwarding known leftover \$$known → \$$amount (whole dollars); no *800# balance read.")
+        Log.i(TAG, "Fast bank sweep: forwarding known leftover \$$known → \$$amount (to the cent); no *800# balance read.")
 
         val ok = performBankSend(primary, bankPin, amount, subscriptionId)
         recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok)
@@ -856,12 +932,21 @@ class ForwardingForegroundService : Service() {
     }
 
     /**
-     * Turns a parsed balance into the whole-dollar amount string to forward, or
-     * null (with a log line) when nothing should be forwarded: below \$1, or
-     * above the sanity ceiling (a value that high means the parser grabbed the
-     * wrong number, so we refuse rather than send an absurd amount).
+     * Turns a parsed balance into the amount string to forward, or null (with a log
+     * line) when nothing should be forwarded: below \$1, or above the sanity ceiling
+     * (a value that high means the parser grabbed the wrong number, so we refuse
+     * rather than send an absurd amount).
+     *
+     * [allowCents] picks the granularity we can safely send on the destination's rail:
+     *  - Bank (`allowCents = true`): the deposit walk types the amount into a real
+     *    numeric "enter amount" dialog that accepts a decimal point, so we forward to
+     *    the CENT and truly zero the account. Any misparse is hard-capped by the
+     *    balance — Zaad rejects a deposit larger than what's on the account.
+     *  - Mobile (`allowCents = false`): the `*806` one-shot code STRIPS the decimal
+     *    separator (…*5.18*… → 518 → a \$518 100x over-send), so it can only ever
+     *    forward whole dollars; the sub-dollar remainder is un-sendable dust.
      */
-    private fun computeForwardAmount(balance: Double?): String? {
+    private fun computeForwardAmount(balance: Double?, allowCents: Boolean): String? {
         if (balance == null || balance < MIN_FORWARD_USD) {
             Log.i(TAG, "Balance ${balance ?: "unknown"} < \$$MIN_FORWARD_USD; nothing to forward.")
             return null
@@ -870,9 +955,11 @@ class ForwardingForegroundService : Service() {
             Log.e(TAG, "Parsed balance \$$balance exceeds sanity cap \$$MAX_FORWARD_USD; refusing to forward (likely a misread).")
             return null
         }
-        val amount = formatAmount(balance)
-        if ((amount.toLongOrNull() ?: 0L) < 1L) {
-            Log.w(TAG, "Computed forward amount '$amount' < \$1; nothing to forward.")
+        val amount = formatAmount(balance, allowCents)
+        // Use a numeric (not integer) floor so a legitimate cents amount like "5.18"
+        // is NOT mistaken for < \$1 and dropped.
+        if ((amount.toDoubleOrNull() ?: 0.0) < MIN_FORWARD_USD) {
+            Log.w(TAG, "Computed forward amount '$amount' < \$$MIN_FORWARD_USD; nothing to forward.")
             return null
         }
         return amount
@@ -961,6 +1048,42 @@ class ForwardingForegroundService : Service() {
     }
 
     /**
+     * Reads the LIVE `*800#` balance, RE-DIALING the whole read up to
+     * [MAX_BALANCE_READ_ATTEMPTS] times if an attempt doesn't parse a balance. This
+     * is the symmetric counterpart to [performBankSend]/[performSend]'s send-side
+     * retries: the balance read moves no money, so re-dialing `*800#` on a transient
+     * miss (slow dialog render, a notification stealing a frame, an MMI rejection) is
+     * always safe — and it stops a single flaky read from aborting the cycle and
+     * leaving a ≥ $1 balance un-forwarded until the next interval (the skip bug).
+     *
+     * Returns the parsed balance (session left armed at BALANCE_CLOSING so the caller
+     * can dial the send straight after), or null if every attempt failed.
+     */
+    private fun readFreshBalanceWithRetries(
+        primary: String,
+        settings: ForwardingSettings,
+        subscriptionId: Int,
+    ): Double? {
+        for (attempt in 1..MAX_BALANCE_READ_ATTEMPTS) {
+            // The session's destination / secondary PIN are unused for the read
+            // itself (bank passes placeholders); beginBalanceCheck resets the parsed
+            // balance and re-arms the window for this attempt.
+            UssdSession.beginBalanceCheck(primary, settings.secondaryPin ?: "", settings.destination ?: "")
+            val dialed = UssdDialer.dialBalanceCheck(this, subscriptionId)
+            if (dialed && awaitBalanceRead()) {
+                return UssdSession.balanceUsd
+            }
+            Log.w(TAG, "Balance read not completed (attempt $attempt/$MAX_BALANCE_READ_ATTEMPTS)" +
+                if (attempt < MAX_BALANCE_READ_ATTEMPTS) "; re-dialing *800#." else "; giving up this tick.")
+            // Clear the dead session so the next attempt re-dials from a clean slate;
+            // the settle lets a busy radio / half-torn-down USSD session recover.
+            UssdSession.finish()
+            if (attempt < MAX_BALANCE_READ_ATTEMPTS) SystemClock.sleep(FORWARD_RETRY_SETTLE_MS)
+        }
+        return null
+    }
+
+    /**
      * Polls until the accessibility service has parsed a balance (the value the
      * forward decision needs), or the cycle fails / the dialog window times out.
      * Deliberately keys off the balance being READ, not the balance dialog being
@@ -1003,14 +1126,28 @@ class ForwardingForegroundService : Service() {
     }
 
     /**
-     * Formats the swept balance for the `*806` command as WHOLE DOLLARS with no
-     * decimal point. This is critical: Zaad's *806 amount field strips the
-     * decimal separator, so sending "10.00" is interpreted as 1000 (a 100x
-     * over-send). We therefore floor to an integer dollar amount — e.g. a
-     * $10.0036 balance forwards "10" (→ $10), leaving a sub-dollar remainder that
-     * the < $1 threshold ignores on the next sweep.
+     * Formats the swept balance into the amount string to type.
+     *
+     * When [allowCents] is false (mobile `*806`): WHOLE DOLLARS with no decimal
+     * point. This is critical — Zaad's `*806` amount field strips the decimal
+     * separator, so sending "10.00" is interpreted as 1000 (a 100x over-send). So we
+     * floor to an integer dollar amount — e.g. a $10.0036 balance forwards "10", the
+     * sub-dollar remainder being un-sendable dust.
+     *
+     * When [allowCents] is true (bank deposit walk): floor to 2 decimals — e.g. a
+     * $5.1825 balance forwards "5.18", zeroing the account down to sub-cent dust that
+     * no rail can transfer. Flooring (never rounding up) guarantees we never try to
+     * send more than the balance. A whole-dollar value drops the ".00" so the field
+     * sees the same "5" it always has (keeps the proven whole-dollar path unchanged
+     * when there are no cents).
      */
-    private fun formatAmount(balance: Double): String = floor(balance).toLong().toString()
+    private fun formatAmount(balance: Double, allowCents: Boolean): String {
+        if (!allowCents) return floor(balance).toLong().toString()
+        val cents = floor(balance * 100.0 + 1e-6).toLong() // +epsilon: absorb fp noise like 5.1799999
+        val whole = cents / 100
+        val frac = cents % 100
+        return if (frac == 0L) whole.toString() else "%d.%02d".format(whole, frac)
+    }
 
     private fun buildNotification(): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1118,8 +1255,11 @@ class ForwardingForegroundService : Service() {
 
         private const val WAKELOCK_TAG = "Xawil:forwarding"
 
-        /** Upper bound a sweep may hold the wake lock, above the bank walk's worst case. */
-        private const val WAKELOCK_TIMEOUT_MS = 4 * 60_000L
+        /**
+         * Upper bound a sweep may hold the wake lock, above the worst case of several
+         * inline read→forward retries ([MAX_INLINE_SWEEP_RETRIES]) back-to-back.
+         */
+        private const val WAKELOCK_TIMEOUT_MS = 6 * 60_000L
 
         /** Only forward when at least this much USD is on the account. */
         private const val MIN_FORWARD_USD = 1.0
@@ -1139,6 +1279,38 @@ class ForwardingForegroundService : Service() {
          * the forward and leaving the amount as a leftover on the account.
          */
         private const val MAX_FORWARD_ATTEMPTS = 3
+
+        /**
+         * How many times to re-dial the `*800#` balance READ within one tick when an
+         * attempt doesn't parse a balance. The read moves no money, so re-dialing is
+         * safe; this is what stops a single flaky read from aborting the cycle and
+         * leaving a ≥ $1 balance un-forwarded until the next interval (the skip bug).
+         */
+        private const val MAX_BALANCE_READ_ATTEMPTS = 3
+
+        /**
+         * When a forward couldn't complete (balance read failed after retries, or a
+         * send never confirmed), re-sweep this soon instead of waiting a whole
+         * interval, so a ≥ $1 balance is never stranded. Long enough to let a busy
+         * radio / prior USSD session fully clear before the next *800#. NOTE: this is
+         * a scheduled-alarm FALLBACK only — Doze can throttle it to ~9 min, so the
+         * primary retry path is [runOneSweepWithInlineRetries], which retries under the
+         * live wakelock and is immune to Doze.
+         */
+        private const val QUICK_RETRY_MS = 15_000L
+
+        /**
+         * How many times, within ONE wakelock-held service execution, to re-run the
+         * whole read→forward sweep when a ≥ $1 balance didn't get forwarded. Retrying
+         * inline (not via an alarm) is what makes the retry actually happen within
+         * seconds even in Doze — see [runOneSweepWithInlineRetries]. Total passes,
+         * including the first: keep the worst-case total (each pass ≈ up to ~90s) well
+         * under [WAKELOCK_TIMEOUT_MS].
+         */
+        private const val MAX_INLINE_SWEEP_RETRIES = 3
+
+        /** Settle between inline sweep retries, letting the radio / prior USSD session clear. */
+        private const val INLINE_RETRY_SETTLE_MS = 5_000L
 
         /** Settle between whole-forward retries, letting the radio / prior USSD session clear. */
         private const val FORWARD_RETRY_SETTLE_MS = 2_000L
