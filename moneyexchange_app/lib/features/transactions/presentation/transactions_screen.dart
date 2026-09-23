@@ -6,6 +6,11 @@ import '../../dashboard/domain/dashboard_data.dart';
 import '../../dashboard/domain/device_transaction.dart';
 import '../../dashboard/presentation/dashboard_providers.dart';
 
+// Built once, not per row per rebuild — DateFormat/NumberFormat construction parses
+// locale patterns, which added up across a long transactions list.
+final _dateFormat = DateFormat.yMMMd().add_jm();
+final _money = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+
 /// The Transactions tab: the full on-device ledger — every money-in that arrived
 /// and every forward the device made — newest first. This is the real record of
 /// what the on-device forwarder did (the backend only ever sees the server-side
@@ -115,8 +120,6 @@ class _TransactionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final dateFormat = DateFormat.yMMMd().add_jm();
-    final money = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
     final isReceived = transaction.isReceived;
 
     final (icon, iconBg, iconFg) = isReceived
@@ -132,8 +135,8 @@ class _TransactionTile extends StatelessWidget {
         );
 
     final title = isReceived
-        ? 'Received ${money.format(transaction.amountUsd)}'
-        : 'Forwarded ${money.format(transaction.amountUsd)}';
+        ? 'Received ${_money.format(transaction.amountUsd)}'
+        : 'Forwarded ${_money.format(transaction.amountUsd)}';
     final subtitle = isReceived
         ? (transaction.provider ?? 'Zaad')
         : 'to ${transaction.destinationLabel}';
@@ -164,7 +167,7 @@ class _TransactionTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    dateFormat.format(transaction.timestamp.toLocal()),
+                    _dateFormat.format(transaction.timestamp.toLocal()),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),

@@ -13,6 +13,13 @@ Color _forwardedColor(BuildContext c) => Theme.of(c).colorScheme.primary;
 final _compact = NumberFormat.compactCurrency(symbol: '\$', decimalDigits: 0);
 final _money = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
 
+// Date formatters are relatively expensive to construct (they parse locale
+// patterns), so build each ONCE at top level and reuse it — never inside a chart
+// axis/tooltip builder, which runs for every label on every repaint.
+final _dMMMd = DateFormat.MMMd();
+final _dMd = DateFormat.Md();
+final _dE = DateFormat.E();
+
 /// Grouped bar chart of received vs forwarded per day over the selected range.
 /// A single-day selection shows one group (that day's two bars); a week/month
 /// shows one group per day.
@@ -49,7 +56,7 @@ class ReceivedForwardedChart extends StatelessWidget {
                     final p = points[group.x];
                     final isReceived = rodIndex == 0;
                     return BarTooltipItem(
-                      '${DateFormat.MMMd().format(p.day)}\n'
+                      '${_dMMMd.format(p.day)}\n'
                       '${isReceived ? "Received" : "Forwarded"} ${_money.format(rod.toY)}',
                       TextStyle(color: theme.colorScheme.onInverseSurface, fontSize: 12),
                     );
@@ -85,8 +92,8 @@ class ReceivedForwardedChart extends StatelessWidget {
                         return const SizedBox.shrink();
                       }
                       final label = points.length == 1
-                          ? DateFormat.MMMd().format(points[i].day)
-                          : DateFormat.Md().format(points[i].day);
+                          ? _dMMMd.format(points[i].day)
+                          : _dMd.format(points[i].day);
                       return Padding(
                         padding: const EdgeInsets.only(top: 6),
                         child: Text(
@@ -293,7 +300,7 @@ class WeeklySummaryCard extends StatelessWidget {
                     getTooltipItems: (spots) => spots.map((s) {
                       final day = week[s.x.toInt()].day;
                       return LineTooltipItem(
-                        '${DateFormat.E().format(day)}  ${_money.format(s.y)}',
+                        '${_dE.format(day)}  ${_money.format(s.y)}',
                         TextStyle(color: theme.colorScheme.onInverseSurface, fontSize: 12),
                       );
                     }).toList(),
@@ -314,7 +321,7 @@ class WeeklySummaryCard extends StatelessWidget {
                         return Padding(
                           padding: const EdgeInsets.only(top: 4),
                           child: Text(
-                            DateFormat.E().format(week[i].day).substring(0, 1),
+                            _dE.format(week[i].day).substring(0, 1),
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),

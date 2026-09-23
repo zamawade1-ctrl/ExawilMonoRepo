@@ -379,7 +379,8 @@ class ForwardingForegroundService : Service() {
                 return
             }
             Log.i(TAG, "898 exchange \$$amountUsd → bank-forwarding \$$amount (to the cent); no *800#.")
-            val ok = performBankSend(primary, bankPin, amount, subscriptionId)
+            // 898 has no interval tick to fall back on, so it keeps the in-flow retry.
+            val ok = performBankSend(primary, bankPin, amount, subscriptionId, maxAttempts = FORWARD_898_ATTEMPTS)
             recordForwarded(amount, null, ForwardingMethod.BANK_ACCOUNT, ok, dedupeKey = ref?.let { "fwd:$it" })
         } else {
             val destination = settings.destination
@@ -389,7 +390,8 @@ class ForwardingForegroundService : Service() {
                 return
             }
             Log.i(TAG, "898 exchange \$$amountUsd → forwarding \$$amount (whole dollars) to $destination; no *800#.")
-            val ok = performSend(destination, amount, primary, secondary, subscriptionId)
+            // 898 has no interval tick to fall back on, so it keeps the in-flow retry.
+            val ok = performSend(destination, amount, primary, secondary, subscriptionId, maxAttempts = FORWARD_898_ATTEMPTS)
             recordForwarded(amount, destination, ForwardingMethod.MOBILE_NUMBER, ok, dedupeKey = ref?.let { "fwd:$it" })
         }
     }
@@ -487,7 +489,7 @@ class ForwardingForegroundService : Service() {
                     manualForceFresh = false
                 }
                 try {
-                    withWakeLock { runOneSweepWithInlineRetries(wasManual, forceFresh) }
+                    withWakeLock { runSweepOncePerTick(wasManual, forceFresh) }
                     if (wasManual) {
                         val settings = ForwardingSettings(this)
                         if (settings.enabled && settings.mode == ForwardingMode.AUTO_FORWARD) {
@@ -583,22 +585,6 @@ class ForwardingForegroundService : Service() {
         scheduleTickAt(next)
     }
 
-    /**
-     * After a forward couldn't complete (balance read failed after retries, or a send
-     * never reached its confirm step), re-sweep SOON — [QUICK_RETRY_MS], not a whole
-     * interval — so a ≥ $1 balance is never stranded waiting out the poll cadence.
-     * Replaces the pending normal tick (same PendingIntent); once the retry runs and
-     * succeeds it reschedules the regular interval again. Only for the auto-forward
-     * poller (message-check mode has no timer).
-     */
-    private fun scheduleQuickRetryTick() {
-        val settings = ForwardingSettings(this)
-        if (!(settings.enabled && settings.mode == ForwardingMode.AUTO_FORWARD)) return
-        val next = SystemClock.elapsedRealtime() + QUICK_RETRY_MS
-        Log.i(TAG, "Forward incomplete; scheduling a quick retry tick in ${QUICK_RETRY_MS / 1000}s.")
-        scheduleTickAt(next)
-    }
-
     /** Schedules the tick alarm at an exact elapsed-realtime moment, Doze-piercing. */
     private fun scheduleTickAt(next: Long) {
         val now = SystemClock.elapsedRealtime()
@@ -681,37 +667,21 @@ class ForwardingForegroundService : Service() {
      * background thread while the accessibility service drives the dialogs.
      */
     /**
-     * Runs [runOneSweep] and, when it reports [SweepOutcome.RETRY_SOON] (a ≥ $1
-     * balance was present but the read/forward didn't complete), RE-SWEEPS INLINE —
-     * right here, still inside the caller's [withWakeLock] so the CPU stays awake —
-     * up to [MAX_INLINE_SWEEP_RETRIES] times with a short settle between tries.
+     * Runs EXACTLY ONE sweep pass for this tick — no inline re-sweeping and no in-tick
+     * retry anywhere.
      *
-     * ## Why inline, not a scheduled alarm
-     * The previous design scheduled a +15s "quick retry" alarm. But once the screen
-     * goes idle the device enters Doze, and Android throttles an app's
-     * `setExactAndAllowWhileIdle` alarms to roughly ONCE PER 9 MINUTES — so the 15s
-     * retry silently slipped to ~9 minutes later, stranding a ≥ $1 balance the whole
-     * time (observed on-device: an 18:00 failure didn't re-forward until 18:09).
-     * Retrying inside the still-held wakelock sidesteps Doze entirely: the money is
-     * re-forwarded within seconds regardless of screen state. If every inline retry
-     * is exhausted we fall back to a scheduled retry (which still helps whenever the
-     * device ISN'T dozing) and, ultimately, the normal interval tick.
+     * A tick makes a single `*800#` balance dial ([readFreshBalance], no retry) and, if
+     * the balance is ≥ $1, a single forward attempt (no re-dial). If the balance dial
+     * misses, or the forward doesn't complete, we do NOTHING more this tick — the next
+     * fixed-rate 60s interval tick simply re-reads and re-forwards. Retrying inside a
+     * tick meant extra rapid `*800#` sessions, which is what provoked Zaad's "Internal
+     * service error"; relying solely on the 60s cadence keeps every tick to the minimum
+     * number of sessions (one balance dial, and one deposit/send dial when forwarding).
      */
-    private fun runOneSweepWithInlineRetries(isManual: Boolean, forceFresh: Boolean) {
-        for (attempt in 1..MAX_INLINE_SWEEP_RETRIES) {
-            val outcome = runOneSweep(isManual, forceFresh)
-            if (outcome == SweepOutcome.DONE) return
-            if (attempt < MAX_INLINE_SWEEP_RETRIES) {
-                Log.i(TAG, "Forward incomplete (≥ \$1 not sent); re-sweeping inline in " +
-                    "${INLINE_RETRY_SETTLE_MS / 1000}s (retry $attempt/${MAX_INLINE_SWEEP_RETRIES - 1}).")
-                SystemClock.sleep(INLINE_RETRY_SETTLE_MS)
-            }
+    private fun runSweepOncePerTick(isManual: Boolean, forceFresh: Boolean) {
+        if (runOneSweep(isManual, forceFresh) == SweepOutcome.RETRY_SOON) {
+            Log.i(TAG, "Sweep didn't complete a forward this tick; the next interval tick will retry (no inline re-dial).")
         }
-        // Inline retries exhausted and a ≥ $1 balance may still be sitting there.
-        // Schedule a quick retry too (fires promptly whenever the device isn't dozing),
-        // with the normal interval tick as the final backstop.
-        Log.w(TAG, "Forward still incomplete after $MAX_INLINE_SWEEP_RETRIES inline attempts; scheduling a fallback retry.")
-        scheduleQuickRetryTick()
     }
 
     private fun runOneSweep(isManual: Boolean, forceFresh: Boolean = false): SweepOutcome {
@@ -746,19 +716,15 @@ class ForwardingForegroundService : Service() {
 
         Log.i(TAG, "Starting balance sweep on sub=$subscriptionId (manual=$isManual).")
         // Phase 1 — balance check, identical for both methods: *800# → primary PIN →
-        // menu option 1 → read balance + account number. RETRIED end-to-end within
-        // this same tick: a transient *800# read miss (a slow-rendering dialog, a
-        // focus-stealing notification frame, an MMI rejection) re-dials rather than
-        // aborting the cycle and stranding a ≥ $1 balance until the next interval —
-        // the root of the intermittent "checks the balance but sometimes doesn't
-        // forward" skip. The read moves no money, so re-dialing *800# is always safe.
-        val balance = readFreshBalanceWithRetries(primary, settings, subscriptionId)
+        // menu option 1 → read balance + account number. ONE dial, no in-tick retry: a
+        // transient read miss just ends this tick and the next 60s tick re-reads. This
+        // keeps a tick to a single balance session (no rapid second *800#), which is
+        // what stops Zaad returning "Internal service error".
+        val balance = readFreshBalance(primary, settings, subscriptionId)
         if (balance == null) {
-            Log.w(TAG, "Balance read failed after $MAX_BALANCE_READ_ATTEMPTS attempts.")
             UssdSession.finish()
-            // A ≥ $1 balance may still be sitting there — ask the caller to re-sweep
-            // NOW (inline, still holding the wakelock) so a run of transient read
-            // misses can't strand the money.
+            // Missed this tick — a ≥ $1 balance (if any) stays on the account and the
+            // next interval tick re-reads + forwards it. No inline re-sweep.
             return SweepOutcome.RETRY_SOON
         }
         // As soon as the balance is READ we move straight to the forward — no wait.
@@ -786,10 +752,10 @@ class ForwardingForegroundService : Service() {
         // our own "transferred to bank" confirmation isn't a trigger. So a ≥ $1
         // balance is ALWAYS forwarded right away, and a stale re-read can't double-send.
 
-        // Phase 2 — forward the swept balance, by destination method. A pre-confirm
-        // failure moved no money but left the ≥ $1 balance sitting there, so we report
-        // RETRY_SOON and the caller re-sweeps immediately (inline, still under the
-        // wakelock) instead of waiting a whole interval or a Doze-throttled alarm.
+        // Phase 2 — forward the swept balance, by destination method. ONE forward
+        // attempt, no re-dial: a pre-confirm failure moved no money but left the ≥ $1
+        // balance sitting there, so we report RETRY_SOON and simply let the next 60s
+        // interval tick re-read + re-forward it (no inline re-sweep, no extra *800#).
         if (settings.forwardingMethod == ForwardingMethod.BANK_ACCOUNT) {
             val bankPin = settings.bankPin
             if (bankPin == null) {
@@ -818,14 +784,16 @@ class ForwardingForegroundService : Service() {
     }
 
     /**
-     * Outcome of one [runOneSweep] pass, so the worker can retry INLINE (while still
-     * holding the wakelock) instead of scheduling a fresh alarm that Doze throttles.
+     * Outcome of one [runOneSweep] pass. Purely informational now — the sweep does NOT
+     * re-run inline on [RETRY_SOON]; the next fixed-rate interval tick is the retry (see
+     * [runSweepOncePerTick]). Kept so the log distinguishes "nothing to do" from "a
+     * ≥ $1 balance didn't get forwarded this tick".
      */
     private enum class SweepOutcome {
         /** Forwarded, or nothing to forward (< $1), or a config gap — nothing more to do now. */
         DONE,
 
-        /** A ≥ $1 balance was present but the read/forward didn't complete — re-sweep now. */
+        /** A ≥ $1 balance was present but the read/forward didn't complete — the next tick retries. */
         RETRY_SOON,
     }
 
@@ -979,13 +947,15 @@ class ForwardingForegroundService : Service() {
         primaryPin: String,
         secondaryPin: String,
         subscriptionId: Int,
+        maxAttempts: Int = 1,
     ): Boolean {
-        // Retry the whole `*806#` send when an attempt doesn't reach SEND_PIN_DONE. A
-        // `false` means the confirmation PIN was never typed (our success signal), so no
-        // money moved — re-arming the session and re-dialing is safe and recovers a forward
-        // a transient dial rejection / stall would otherwise drop. beginDirectSend re-arms
-        // the SEND_PIN step with the PINs + destination each attempt (finish() cleared them).
-        for (attempt in 1..MAX_FORWARD_ATTEMPTS) {
+        // Attempt the whole `*806#` send. A `false` means the confirmation PIN was never
+        // typed (our success signal), so no money moved — re-dialing is safe. The
+        // auto-forward sweep passes [maxAttempts] = 1 (single attempt; the next 60s tick
+        // re-reads + re-forwards a ≥ $1 balance, so no rapid in-tick re-dial). The 898
+        // check-messages flow — which has NO interval tick to fall back on — passes a
+        // higher count so a transient glitch there still recovers the exchanged amount.
+        for (attempt in 1..maxAttempts) {
             UssdSession.beginDirectSend(primaryPin, secondaryPin, destination)
             val dialed = UssdDialer.dialSend(this, destination, amount, secondaryPin, subscriptionId)
 
@@ -1000,9 +970,9 @@ class ForwardingForegroundService : Service() {
             UssdSession.finish()
             if (submitted) return true
 
-            Log.w(TAG, "Send confirmation not completed (attempt $attempt/$MAX_FORWARD_ATTEMPTS)" +
-                if (attempt < MAX_FORWARD_ATTEMPTS) "; re-dialing." else "; giving up.")
-            if (attempt < MAX_FORWARD_ATTEMPTS) SystemClock.sleep(FORWARD_RETRY_SETTLE_MS)
+            Log.w(TAG, "Send confirmation not completed (attempt $attempt/$maxAttempts)" +
+                if (attempt < maxAttempts) "; re-dialing after backoff." else "; giving up (next tick / SMS retries).")
+            if (attempt < maxAttempts) SystemClock.sleep(retryBackoffMs(attempt))
         }
         return false
     }
@@ -1018,14 +988,20 @@ class ForwardingForegroundService : Service() {
      * bank step must already be armed by the caller via [UssdSession.beginBankSend]
      * — done here so the dial and the arm can't race.
      */
-    private fun performBankSend(primary: String, bankPin: String, amount: String, subscriptionId: Int): Boolean {
-        // Retry the WHOLE *800# deposit walk when an attempt doesn't reach the confirm
-        // step. A `false` here means we never typed the "1 Yes" confirmation (our success
-        // signal is BANK_CONFIRM_DONE), so NO money moved — re-dialing and re-walking is
-        // safe and recovers a forward that a mid-walk USSD-session drop / MMI error /
-        // network stall would otherwise abandon (the "898 received but nothing forwarded"
-        // bug). Each attempt re-arms the session and re-dials from scratch.
-        for (attempt in 1..MAX_FORWARD_ATTEMPTS) {
+    private fun performBankSend(
+        primary: String,
+        bankPin: String,
+        amount: String,
+        subscriptionId: Int,
+        maxAttempts: Int = 1,
+    ): Boolean {
+        // Attempt the WHOLE *800# deposit walk. A `false` here means we never typed the
+        // "1 Yes" confirmation (our success signal is BANK_CONFIRM_DONE), so NO money
+        // moved — re-dialing is safe. The auto-forward sweep passes [maxAttempts] = 1
+        // (single attempt; the next 60s tick re-reads + re-forwards, so no rapid in-tick
+        // re-dial). The 898 check-messages flow — which has NO interval tick — passes a
+        // higher count so a transient mid-walk glitch there still recovers the amount.
+        for (attempt in 1..maxAttempts) {
             UssdSession.beginBankSend(primary, bankPin, amount)
             val dialed = UssdDialer.dialBalanceCheck(this, subscriptionId) // bank walk also starts at *800#
 
@@ -1040,46 +1016,39 @@ class ForwardingForegroundService : Service() {
             UssdSession.finish()
             if (confirmed) return true
 
-            Log.w(TAG, "Bank forward not confirmed (attempt $attempt/$MAX_FORWARD_ATTEMPTS)" +
-                if (attempt < MAX_FORWARD_ATTEMPTS) "; re-dialing the whole walk." else "; giving up.")
-            if (attempt < MAX_FORWARD_ATTEMPTS) SystemClock.sleep(FORWARD_RETRY_SETTLE_MS)
+            Log.w(TAG, "Bank forward not confirmed (attempt $attempt/$maxAttempts)" +
+                if (attempt < maxAttempts) "; re-dialing the whole walk after backoff." else "; giving up (next tick / SMS retries).")
+            if (attempt < maxAttempts) SystemClock.sleep(retryBackoffMs(attempt))
         }
         return false
     }
 
     /**
-     * Reads the LIVE `*800#` balance, RE-DIALING the whole read up to
-     * [MAX_BALANCE_READ_ATTEMPTS] times if an attempt doesn't parse a balance. This
-     * is the symmetric counterpart to [performBankSend]/[performSend]'s send-side
-     * retries: the balance read moves no money, so re-dialing `*800#` on a transient
-     * miss (slow dialog render, a notification stealing a frame, an MMI rejection) is
-     * always safe — and it stops a single flaky read from aborting the cycle and
-     * leaving a ≥ $1 balance un-forwarded until the next interval (the skip bug).
+     * Reads the LIVE `*800#` balance with EXACTLY ONE dial — no in-tick retry. If the
+     * dial misses (a transient slow render, a focus-stealing notification frame, or a
+     * Zaad rejection), we give up THIS tick and let the next 60-second interval tick try
+     * again. This is deliberate: retrying inside a tick meant a second rapid `*800#`
+     * session, which (with the forward's own second `*800#`) is what provoked Zaad's
+     * "Internal service error"; relying on the fixed 60s cadence keeps every tick to a
+     * single balance session.
      *
      * Returns the parsed balance (session left armed at BALANCE_CLOSING so the caller
-     * can dial the send straight after), or null if every attempt failed.
+     * can dial the send straight after), or null if the single dial missed.
      */
-    private fun readFreshBalanceWithRetries(
+    private fun readFreshBalance(
         primary: String,
         settings: ForwardingSettings,
         subscriptionId: Int,
     ): Double? {
-        for (attempt in 1..MAX_BALANCE_READ_ATTEMPTS) {
-            // The session's destination / secondary PIN are unused for the read
-            // itself (bank passes placeholders); beginBalanceCheck resets the parsed
-            // balance and re-arms the window for this attempt.
-            UssdSession.beginBalanceCheck(primary, settings.secondaryPin ?: "", settings.destination ?: "")
-            val dialed = UssdDialer.dialBalanceCheck(this, subscriptionId)
-            if (dialed && awaitBalanceRead()) {
-                return UssdSession.balanceUsd
-            }
-            Log.w(TAG, "Balance read not completed (attempt $attempt/$MAX_BALANCE_READ_ATTEMPTS)" +
-                if (attempt < MAX_BALANCE_READ_ATTEMPTS) "; re-dialing *800#." else "; giving up this tick.")
-            // Clear the dead session so the next attempt re-dials from a clean slate;
-            // the settle lets a busy radio / half-torn-down USSD session recover.
-            UssdSession.finish()
-            if (attempt < MAX_BALANCE_READ_ATTEMPTS) SystemClock.sleep(FORWARD_RETRY_SETTLE_MS)
+        // The session's destination / secondary PIN are unused for the read itself
+        // (bank passes placeholders); beginBalanceCheck resets the parsed balance.
+        UssdSession.beginBalanceCheck(primary, settings.secondaryPin ?: "", settings.destination ?: "")
+        val dialed = UssdDialer.dialBalanceCheck(this, subscriptionId)
+        if (dialed && awaitBalanceRead()) {
+            return UssdSession.balanceUsd
         }
+        Log.w(TAG, "Balance read not completed; the next interval tick will retry.")
+        UssdSession.finish()
         return null
     }
 
@@ -1256,8 +1225,9 @@ class ForwardingForegroundService : Service() {
         private const val WAKELOCK_TAG = "Xawil:forwarding"
 
         /**
-         * Upper bound a sweep may hold the wake lock, above the worst case of several
-         * inline read→forward retries ([MAX_INLINE_SWEEP_RETRIES]) back-to-back.
+         * Upper bound a sweep may hold the wake lock: one balance read (dial + at most
+         * one spaced retry) plus one forward (with its own bounded send retries). Kept
+         * generous so a slow-but-legitimate cycle is never cut off mid-forward.
          */
         private const val WAKELOCK_TIMEOUT_MS = 6 * 60_000L
 
@@ -1272,48 +1242,28 @@ class ForwardingForegroundService : Service() {
         private const val MAX_FORWARD_USD = 100_000.0
 
         /**
-         * How many times to (re-)run the WHOLE forward when an attempt never reaches the
-         * confirm step. A pre-confirm failure moved no money (our success signal is the
-         * confirm being typed), so re-dialing is safe — this is what makes a Zaad *800#
-         * session drop / MMI error / network stall mid-walk recover instead of abandoning
-         * the forward and leaving the amount as a leftover on the account.
+         * How many times the 898 CHECK-MESSAGES flow re-runs the whole forward when an
+         * attempt never reaches the confirm step. That mode has NO interval tick to fall
+         * back on, so it keeps an in-flow retry to recover a transient glitch. A
+         * pre-confirm failure moved no money (our success signal is the confirm being
+         * typed), so re-dialing is safe. The AUTO-FORWARD sweep does NOT use this — it
+         * makes a single attempt per tick and relies on the next 60s tick (passing
+         * `maxAttempts = 1` to [performSend]/[performBankSend]).
          */
-        private const val MAX_FORWARD_ATTEMPTS = 3
+        private const val FORWARD_898_ATTEMPTS = 3
 
         /**
-         * How many times to re-dial the `*800#` balance READ within one tick when an
-         * attempt doesn't parse a balance. The read moves no money, so re-dialing is
-         * safe; this is what stops a single flaky read from aborting the cycle and
-         * leaving a ≥ $1 balance un-forwarded until the next interval (the skip bug).
+         * Exponential backoff between the 898 flow's forward retries (the only remaining
+         * in-flow retry). After a failure we wait progressively longer (base, 2×, 4×, …
+         * capped) so a struggling Zaad gateway gets room to recover. This is ON TOP of
+         * [UssdDialer]'s per-dial minimum cooldown. [attempt] is the attempt that just
+         * failed (1-based).
          */
-        private const val MAX_BALANCE_READ_ATTEMPTS = 3
+        private fun retryBackoffMs(attempt: Int): Long =
+            (RETRY_BACKOFF_BASE_MS shl (attempt - 1)).coerceAtMost(RETRY_BACKOFF_CAP_MS)
 
-        /**
-         * When a forward couldn't complete (balance read failed after retries, or a
-         * send never confirmed), re-sweep this soon instead of waiting a whole
-         * interval, so a ≥ $1 balance is never stranded. Long enough to let a busy
-         * radio / prior USSD session fully clear before the next *800#. NOTE: this is
-         * a scheduled-alarm FALLBACK only — Doze can throttle it to ~9 min, so the
-         * primary retry path is [runOneSweepWithInlineRetries], which retries under the
-         * live wakelock and is immune to Doze.
-         */
-        private const val QUICK_RETRY_MS = 15_000L
-
-        /**
-         * How many times, within ONE wakelock-held service execution, to re-run the
-         * whole read→forward sweep when a ≥ $1 balance didn't get forwarded. Retrying
-         * inline (not via an alarm) is what makes the retry actually happen within
-         * seconds even in Doze — see [runOneSweepWithInlineRetries]. Total passes,
-         * including the first: keep the worst-case total (each pass ≈ up to ~90s) well
-         * under [WAKELOCK_TIMEOUT_MS].
-         */
-        private const val MAX_INLINE_SWEEP_RETRIES = 3
-
-        /** Settle between inline sweep retries, letting the radio / prior USSD session clear. */
-        private const val INLINE_RETRY_SETTLE_MS = 5_000L
-
-        /** Settle between whole-forward retries, letting the radio / prior USSD session clear. */
-        private const val FORWARD_RETRY_SETTLE_MS = 2_000L
+        private const val RETRY_BACKOFF_BASE_MS = 3_000L
+        private const val RETRY_BACKOFF_CAP_MS = 30_000L
 
         /** How long a single blocking wait for a step will poll before giving up. */
         private const val AWAIT_CAP_MS = 50_000L

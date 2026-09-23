@@ -58,13 +58,24 @@ object UssdDialer {
     ): Boolean = dial(context, buildSend(destination, amount, secondaryPin), subscriptionId)
 
     /**
-     * Places the USSD call, retrying if the system rejects it with the "Connection
-     * problem or invalid MMI code." dialog. That rejection (radio busy / a prior USSD
-     * session not fully torn down / dialed too fast) is a PRE-submission failure — no
-     * money moved — so re-dialing is safe and recovers a forward that would otherwise
-     * be recorded as failed. Must be called from a context that currently has
-     * background-activity-start privilege (the foreground service) or the foreground,
-     * and from a background thread (it blocks briefly to watch the dial's outcome).
+     * Places EXACTLY ONE USSD call and returns whether it was placed. It does NOT retry
+     * internally — a rejection/error (the "Connection problem / invalid MMI code" system
+     * dialog, or a Zaad "Internal service error") is surfaced to the CALLER, whose own
+     * await (balance read / send confirm) detects it via [UssdSession.mmiError] and
+     * decides whether to retry. This keeps retry policy in ONE place: the balance read
+     * does at most one spaced retry, a send its own bounded retry — so a single tick can
+     * never burst a run of rapid `*800#` dials (the very thing that provokes the Zaad
+     * error). Must be called from a context with background-activity-start privilege
+     * (the foreground service) or the foreground, and from a background thread (it blocks
+     * in [prepareForDial] to serialize + space the dial).
+     *
+     * ## Single-flight + cooldown (why Zaad stops erroring)
+     * [prepareForDial] runs first and GUARANTEES we never dial on top of a live session —
+     * the actual trigger for the error: it clears any leftover dialog, actively ends +
+     * waits for ANY open telephony window to be GONE (not merely dismissed) so only one
+     * `*800#` session is ever in flight, enforces a real minimum cooldown
+     * ([MIN_DIAL_INTERVAL_MS], shared across balance/send and every caller so ticks,
+     * the one retry and SMS forwards can't bunch up), then settles the radio.
      */
     private fun dial(context: Context, ussd: String, subscriptionId: Int): Boolean {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE)
@@ -76,77 +87,109 @@ object UssdDialer {
 
         // '#' must be percent-encoded (%23) or the dialer truncates the code.
         val uri = Uri.parse("tel:" + Uri.encode(ussd))
-        // Progress = the a11y service acted on the freshly-dialed dialog and moved the
-        // session forward; compared against the step as it stands right before we dial.
-        val stepBefore = UssdSession.step
 
-        for (attempt in 1..MAX_DIAL_ATTEMPTS) {
-            // Sweep away any leftover result/error dialog still on screen (from a prior
-            // cycle or a just-rejected attempt) so it can't block this call, then let
-            // the radio / prior USSD session settle before dialing — dialing on top of
-            // a not-yet-torn-down session is what triggers the MMI-error rejection.
-            UssdAccessibilityService.clearLeftoverResultDialog()
-            SystemClock.sleep(if (attempt == 1) FIRST_SETTLE_MS else RETRY_SETTLE_MS)
-            UssdSession.clearMmiError()
+        prepareForDial()
+        UssdSession.clearMmiError()
 
-            val placed = try {
-                val intent = Intent(Intent.ACTION_CALL, uri).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    SimCards.phoneAccountHandle(context, subscriptionId)?.let { handle ->
-                        putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
-                    }
+        return try {
+            val intent = Intent(Intent.ACTION_CALL, uri).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                SimCards.phoneAccountHandle(context, subscriptionId)?.let { handle ->
+                    putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
                 }
-                context.startActivity(intent)
-                Log.i(TAG, "Dialed USSD ${redact(ussd)} on sub=$subscriptionId (attempt $attempt).")
-                true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to place USSD call (attempt $attempt).", e)
-                false
             }
-            if (!placed) continue
-
-            // Watch briefly: an MMI-error rejection → retry; forward progress (or no
-            // clear signal) → treat as dialed and let the caller's await drive on.
-            if (!awaitMmiError(stepBefore)) return true
-            Log.w(TAG, "USSD dial rejected as MMI error; retrying (attempt $attempt/$MAX_DIAL_ATTEMPTS).")
+            lastDialAtMs = SystemClock.elapsedRealtime()
+            context.startActivity(intent)
+            Log.i(TAG, "Dialed USSD ${redact(ussd)} on sub=$subscriptionId.")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to place USSD call.", e)
+            false
         }
-
-        Log.e(TAG, "USSD dial still rejected after $MAX_DIAL_ATTEMPTS attempts.")
-        return false
     }
 
     /**
-     * After a call is placed, watches the shared session for a short window and
-     * returns true ONLY if the dial was rejected with an MMI-error dialog (so the
-     * caller retries). Returns false as soon as the a11y service makes forward
-     * progress (step advanced or balance captured → the dial succeeded), or if the
-     * window elapses with no signal (a slow-but-fine dial — the caller's own step
-     * timeout is the backstop).
+     * The gate every dial passes through, in order: clear leftovers → end + await any
+     * open telephony window GONE → enforce the min cooldown measured from the PRIOR
+     * SESSION'S END → settle the radio. Blocks the calling background thread. No
+     * per-attempt backoff here — the caller owns retry spacing (a short backoff sleep
+     * before its single retry) so this stays a plain "one dial, properly spaced" gate.
      */
-    private fun awaitMmiError(stepBefore: UssdSession.Step): Boolean {
-        val deadline = SystemClock.elapsedRealtime() + DIAL_WATCH_MS
-        while (SystemClock.elapsedRealtime() < deadline) {
-            if (UssdSession.mmiError) return true
-            if (UssdSession.step != stepBefore || UssdSession.balanceUsd != null) return false
-            SystemClock.sleep(DIAL_POLL_MS)
+    private fun prepareForDial() {
+        // 1. Clear any leftover terminal result/error dialog (recognised-text janitor).
+        UssdAccessibilityService.clearLeftoverResultDialog()
+
+        // 2. Ensure NO telephony window is still open before we dial — actively ending a
+        //    stale PIN/menu/confirm/balance dialog and waiting until it's gone, so this
+        //    call never stacks on a half-torn-down session (Zaad's error trigger).
+        awaitTelephonyWindowClear()
+
+        // 3. Minimum cooldown measured from when the PREVIOUS USSD SESSION ENDED (its
+        //    window last seen open), NOT from when the previous dial was placed. This is
+        //    the fix for the real-transaction "Internal service error": a bank forward
+        //    dials *800# twice per tick (balance read, then the deposit walk), and the
+        //    ~13s spent driving the balance dialogs used to fully absorb a
+        //    placement-anchored cooldown — so the deposit dial fired ~1.5s after the
+        //    balance session's window closed, before Zaad had torn it down server-side.
+        //    Anchoring to session-end guarantees a real quiet gap after the window is
+        //    gone, however long the prior session ran. Falls back to the dial-placement
+        //    clock only when the a11y service has never observed a USSD window (returns 0).
+        val sessionEnd = UssdAccessibilityService.sessionEndAnchorMs()
+        val anchor = if (sessionEnd > 0L) sessionEnd else lastDialAtMs
+        val sinceEnd = SystemClock.elapsedRealtime() - anchor
+        val wait = MIN_DIAL_INTERVAL_MS - sinceEnd
+        if (wait > 0) {
+            Log.i(TAG, "Cooldown before dial: waiting ${wait}ms (since prior session end).")
+            SystemClock.sleep(wait)
         }
-        return false
+
+        // 4. Let the radio breathe after the window cleared, before placing the call.
+        SystemClock.sleep(PRE_DIAL_SETTLE_MS)
+    }
+
+    /**
+     * Blocks until no USSD/telephony dialog window is on screen, actively cancelling a
+     * lingering one (a given-up attempt's PIN/menu/confirm, or the terminal balance
+     * screen) each poll. Gives up after [WINDOW_CLEAR_TIMEOUT_MS] and dials anyway (the
+     * cooldown + settle still space it out) rather than stalling the forward forever.
+     */
+    private fun awaitTelephonyWindowClear() {
+        val deadline = SystemClock.elapsedRealtime() + WINDOW_CLEAR_TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (!UssdAccessibilityService.isTelephonyWindowOpen()) return
+            UssdAccessibilityService.endOpenUssdDialog()
+            SystemClock.sleep(WINDOW_POLL_MS)
+        }
+        Log.w(TAG, "A telephony window was still open after ${WINDOW_CLEAR_TIMEOUT_MS}ms; dialing anyway.")
     }
 
     /** The send command embeds the secondary PIN inline; keep it out of logs. */
     private fun redact(ussd: String): String =
         if (ussd.startsWith("*$SEND_PREFIX")) "*$SEND_PREFIX*…#" else ussd
 
-    /** How many times to (re-)dial when the system rejects the code with an MMI error. */
-    private const val MAX_DIAL_ATTEMPTS = 3
+    /**
+     * Elapsed-realtime of the last USSD call we placed. FALLBACK cooldown anchor only —
+     * used when the a11y service has never observed a USSD window (so it can't report a
+     * session-end time). The primary anchor is
+     * [UssdAccessibilityService.sessionEndAnchorMs] (see [prepareForDial]). `@Volatile`
+     * because it's written on the sweep thread and could be read from another.
+     */
+    @Volatile
+    private var lastDialAtMs: Long = 0L
 
-    /** Settle before the first dial — lets the leftover-dialog clear run + radio breathe. */
-    private const val FIRST_SETTLE_MS = 200L
+    /**
+     * Real minimum QUIET GAP between the end of one USSD session and the start of the
+     * next dial. Zaad's gateway returns "Internal service error please try again" when a
+     * `*800#` session is opened too soon after the previous one closed (its server-side
+     * teardown lags the on-screen dialog close); this is the floor that prevents it.
+     * Measured from session-END, so a long-running prior session no longer eats the gap.
+     */
+    private const val MIN_DIAL_INTERVAL_MS = 8_000L
 
-    /** Longer settle before a retry, to give a busy radio / prior session time to clear. */
-    private const val RETRY_SETTLE_MS = 1_500L
+    /** Fixed radio settle after the telephony window is confirmed clear, before dialing. */
+    private const val PRE_DIAL_SETTLE_MS = 1_200L
 
-    /** How long after a dial to watch for an MMI-error rejection vs. forward progress. */
-    private const val DIAL_WATCH_MS = 6_000L
-    private const val DIAL_POLL_MS = 200L
+    /** How long [awaitTelephonyWindowClear] waits for a lingering USSD window to close. */
+    private const val WINDOW_CLEAR_TIMEOUT_MS = 8_000L
+    private const val WINDOW_POLL_MS = 300L
 }

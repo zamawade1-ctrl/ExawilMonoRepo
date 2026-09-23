@@ -70,5 +70,18 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+    // Optional dev proxy: set VITE_PROXY_TARGET (e.g. the live API) and the browser
+    // calls same-origin /api/* while Vite forwards them server-side — so the remote
+    // backend's CORS allowlist doesn't need to include localhost. Pair it with an
+    // empty VITE_API_BASE_URL so the client issues relative /api/* requests.
+    proxy: process.env.VITE_PROXY_TARGET
+      ? {
+          '/api': {
+            target: process.env.VITE_PROXY_TARGET,
+            changeOrigin: true,
+            secure: true,
+          },
+        }
+      : undefined,
   },
 });

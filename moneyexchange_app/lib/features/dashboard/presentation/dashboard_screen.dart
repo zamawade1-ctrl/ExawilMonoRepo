@@ -85,7 +85,7 @@ class _RangeSelector extends ConsumerWidget {
     }
 
     final pickedLabel = selection.mode == DashboardMode.day && selection.day != null
-        ? DateFormat.MMMd().format(selection.day!)
+        ? _dMMMd.format(selection.day!)
         : 'Pick a day';
 
     return Wrap(
@@ -242,3 +242,7 @@ class _EmptyChart extends StatelessWidget {
 
 /// Shared USD formatter for the dashboard.
 final _money = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+
+/// Shared day-label formatter — built once (DateFormat construction parses locale
+/// patterns) rather than on every rebuild of the range selector.
+final _dMMMd = DateFormat.MMMd();

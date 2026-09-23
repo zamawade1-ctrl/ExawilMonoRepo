@@ -8,6 +8,9 @@ import '../domain/destination_change.dart';
 import 'destination_change_confirm_screen.dart';
 import 'notifications_providers.dart';
 
+// Built once (DateFormat construction parses locale patterns), reused by every card.
+final _dateFormat = DateFormat.yMMMd().add_jm();
+
 /// The Notifications tab: a durable on-device audit trail of forwarding
 /// destination changes (timestamp, old → new numbers, status). Pending entries
 /// are tappable and open the confirmation screen. This is a security log, not the
@@ -68,7 +71,6 @@ class _ChangeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dateFormat = DateFormat.yMMMd().add_jm();
     final pending = change.status == DestinationChangeStatus.pending;
 
     return Card(
@@ -116,7 +118,7 @@ class _ChangeCard extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                dateFormat.format(change.at),
+                _dateFormat.format(change.at),
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),

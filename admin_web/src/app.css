@@ -1138,6 +1138,58 @@
 }
 
 /* ==========================================================================
+   Billing — filter controls + section headings
+   ========================================================================== */
+.billing-toolbar {
+  justify-content: flex-start;
+  gap: 24px;
+}
+.billing-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.billing-filter-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.period-input {
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--outline);
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  background: var(--surface);
+  color: var(--on-surface);
+}
+.period-input:focus {
+  outline: none;
+  border-color: var(--leon-green);
+  box-shadow: 0 0 0 3px rgba(47, 168, 79, 0.15);
+}
+.period-quick {
+  min-width: 150px;
+}
+.billing-section-title {
+  margin: 26px 0 12px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--on-surface);
+}
+
+@media (max-width: 720px) {
+  .billing-toolbar {
+    gap: 14px;
+  }
+  .billing-filter {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+/* ==========================================================================
    Users — mobile card list + mobile sort control
    The datatable is the desktop view; on narrow screens (≤860px) the table is
    swapped for a stack of cards (a table row can't reflow, a card can) and a

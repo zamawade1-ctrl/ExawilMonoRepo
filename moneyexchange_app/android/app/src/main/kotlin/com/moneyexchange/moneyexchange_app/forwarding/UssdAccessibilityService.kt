@@ -8,6 +8,9 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Drives the interactive USSD dialogs of one balance-sweep cycle so the whole
@@ -85,6 +88,12 @@ class UssdAccessibilityService : AccessibilityService() {
         // telephony dialog (and finds it even under a heads-up notification), or null.
         val root = resolveUssdRoot() ?: return
 
+        // A telephony/USSD window is on screen right now — stamp the moment. Once the
+        // window closes (the session ends) this stops updating, so it holds ≈ the
+        // session-END time, which [UssdDialer] anchors its dial cooldown to (a quiet gap
+        // is measured from when the prior session ENDED, not when its dial was placed).
+        telephonyWindowLastOpenAtMs = SystemClock.elapsedRealtime()
+
         // No cycle in flight: sweep away any leftover terminal forwarding result
         // dialog (a "you sent…" / "successfully transferred…" screen) that lingered
         // after a finished cycle, arrived late, or is stacking up across cycles.
@@ -105,16 +114,25 @@ class UssdAccessibilityService : AccessibilityService() {
             leftoverCaptured = false
         }
 
-        // The dial was rejected: the system shows "Connection problem or invalid MMI
-        // code." No input field, so no step handler can act — dismiss it and flag the
-        // session so [UssdDialer] re-dials rather than letting the forward silently
-        // fail. Checked before the step handlers because it can appear at ANY dial.
-        if (isMmiErrorDialog(collectText(root))) {
+        // The dial couldn't produce a usable result: either the system rejection
+        // ("Connection problem or invalid MMI code.") or a Zaad gateway error returned
+        // in place of the balance ("Internal service error please try again"). Neither
+        // has an input field, so no step handler can act — dismiss it and flag the
+        // session so the poller re-dials rather than letting the forward silently fail
+        // (and the dialog sit stuck on screen). Guarded on there being NO editable so a
+        // real interactive prompt containing a matching word is never mis-dismissed.
+        // Checked before the step handlers because it can appear at ANY dial.
+        val errorText = collectText(root)
+        if (findEditable(root) == null && isDialErrorDialog(errorText)) {
             // Tap OK only (no BACK) — the error dialog is a standard AlertDialog whose
             // OK reliably dismisses it, and BACK here could close our app behind it.
             dismissDialog(root)
             UssdSession.signalMmiError()
-            Log.w(TAG, "MMI-error dialog dismissed; flagged for re-dial (step=${UssdSession.step}).")
+            // Log the actual screen text so a lingering error can be told apart (a
+            // network/MMI rejection before the PIN vs. a Zaad "internal service error"
+            // after it) when tuning the single-flight/cooldown behaviour.
+            Log.w(TAG, "Dial-error dialog dismissed; flagged for re-dial (step=${UssdSession.step}). " +
+                "Text: ${errorText.replace('\n', '|')}")
             return
         }
 
@@ -213,6 +231,40 @@ class UssdAccessibilityService : AccessibilityService() {
         }
         val active = rootInActiveWindow ?: return null
         return if (active.packageName?.toString() in USSD_DIALOG_PACKAGES) active else null
+    }
+
+    /**
+     * True if a system USSD/telephony dialog window is currently on screen (the
+     * `*800#` / `*806#` call is still in flight or its dialog is still up). Read
+     * on-demand off the live [windows] list so it never goes stale — the poller uses
+     * it to hold a new dial until the previous session's window is provably GONE, not
+     * merely dismissed, which is what stops a re-dial from landing on a half-torn-down
+     * session and provoking Zaad's "Internal service error".
+     */
+    private fun hasTelephonyWindow(): Boolean {
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                if (r.packageName?.toString() in USSD_DIALOG_PACKAGES) return true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Telephony-window scan failed.", e)
+        }
+        return false
+    }
+
+    /**
+     * Cancels a stale USSD dialog still on screen (a leftover PIN/menu/confirm from a
+     * given-up attempt, or the terminal balance screen) so the NEXT dial starts from a
+     * clean slate with no telephony window open. Prefers a Cancel/OK button (targets
+     * the dialog directly); falls back to BACK only when there's none. Safe here
+     * because the poller calls this ONLY between cycles / on a retry — before the new
+     * call is placed — so there is never an in-flight transfer to interrupt (a mobile
+     * send's success is the confirm PIN being typed, which has already happened or
+     * provably failed by the time we re-dial).
+     */
+    private fun cancelOpenDialog(root: AccessibilityNodeInfo) {
+        dismissDialog(root)
     }
 
     /** Logs the raw text of each distinct USSD screen, for matcher tuning. */
@@ -440,9 +492,11 @@ class UssdAccessibilityService : AccessibilityService() {
         if (findEditable(root) != null) { janitorAttempts = 0; janitorLeftoverCaptured = false; return }
         if (findLabeled(root, DISMISS_LABELS) == null) { janitorAttempts = 0; janitorLeftoverCaptured = false; return }
         val text = collectText(root)
-        // Also clear a lingering "Connection problem or invalid MMI code" error dialog:
-        // like a result dialog, a stuck error dialog blocks the next dial.
-        if (!isForwardingResultDialog(text) && !isMmiErrorDialog(text)) {
+        // Also clear a lingering dial-error dialog ("invalid MMI code" or a Zaad
+        // "Internal service error"): like a result dialog, a stuck error dialog blocks
+        // the next dial — and clearing it before we re-dial is what stops the retry
+        // storm from stacking onto it and re-provoking the same error.
+        if (!isForwardingResultDialog(text) && !isDialErrorDialog(text)) {
             janitorAttempts = 0
             janitorLeftoverCaptured = false
             return
@@ -482,12 +536,12 @@ class UssdAccessibilityService : AccessibilityService() {
         return RESULT_MARKERS.any { t.contains(it) }
     }
 
-    /** True if [text] is the system "Connection problem or invalid MMI code." dialog. */
-    private fun isMmiErrorDialog(text: String): Boolean {
-        if (text.isBlank()) return false
-        val t = text.lowercase()
-        return ERROR_MARKERS.any { t.contains(it) }
-    }
+    /**
+     * True if [text] is a USSD dial error we should dismiss + re-dial: the system
+     * "Connection problem or invalid MMI code." rejection, or a Zaad gateway error
+     * ("Internal service error please try again" and variants). See [ERROR_MARKERS].
+     */
+    private fun isDialErrorDialog(text: String): Boolean = matchesDialError(text)
 
     /**
      * Dismisses a terminal result dialog by tapping its OK/close button (climbing to
@@ -614,13 +668,40 @@ class UssdAccessibilityService : AccessibilityService() {
         )
 
         /**
-         * Text markers for the system telephony error dialog shown when a USSD dial
-         * is rejected — "Connection problem or invalid MMI code." Recognised so it's
-         * dismissed (never left blocking the next dial) and the dial is retried.
+         * Text markers for a USSD dial that couldn't return a usable result and must
+         * be dismissed + re-dialed. Two kinds:
+         *
+         *  - The system telephony rejection — "Connection problem or invalid MMI
+         *    code." — shown when the radio refuses the dial (busy / prior session not
+         *    torn down / dialed too fast).
+         *  - A **Zaad gateway error** returned mid-session — "Internal service error
+         *    please try again" (and its "system busy / temporarily unavailable"
+         *    variants). This one arrives AFTER the PIN, in place of the balance/menu,
+         *    so no step handler can act on it: without recognising it the dialog was
+         *    left stuck on screen (never OK'd) and every retry-storm re-dial stacked
+         *    on top of it — itself what keeps Zaad returning the error. Recognising it
+         *    dismisses the dialog and flags the session for a clean re-dial.
+         *
+         * Matched only on a no-input screen (see the call site), so a genuine
+         * interactive prompt that happens to contain one of these words is untouched.
          */
         private val ERROR_MARKERS = listOf(
             "invalid mmi", "mmi code", "connection problem",
+            "internal service error", "service error", "internal error",
+            "system busy", "temporarily unavailable", "try again later",
         )
+
+        /**
+         * Pure marker match for a dial-error screen, extracted so it can be unit
+         * tested without an [AccessibilityService] instance (the on-device symptom —
+         * a stuck "Internal service error please try again" dialog — is exactly this
+         * text not being recognised).
+         */
+        fun matchesDialError(text: String): Boolean {
+            if (text.isBlank()) return false
+            val t = text.lowercase()
+            return ERROR_MARKERS.any { t.contains(it) }
+        }
 
         /** Min gap between dismiss attempts in [closeResultDialog], to let the dialog animate away. */
         private const val CLOSE_RETRY_GAP_MS = 400L
@@ -657,5 +738,72 @@ class UssdAccessibilityService : AccessibilityService() {
                 service.dismissLeftoverResultDialog(root)
             }
         }
+
+        /**
+         * Authoritative check (queried on the a11y main thread off the live [windows]
+         * list, so it can't go stale) of whether a USSD/telephony dialog is still on
+         * screen. Callable from the poller's background thread; blocks up to
+         * [WINDOW_QUERY_TIMEOUT_MS] for the answer. Returns false when the service
+         * isn't enabled (no way to know — treated as "clear" so the dial isn't blocked
+         * forever) or if the query can't complete in time.
+         */
+        fun isTelephonyWindowOpen(): Boolean {
+            val service = instance ?: return false
+            val latch = CountDownLatch(1)
+            val result = AtomicBoolean(false)
+            service.mainHandler.post {
+                try {
+                    result.set(service.hasTelephonyWindow())
+                } finally {
+                    latch.countDown()
+                }
+            }
+            return try {
+                latch.await(WINDOW_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                result.get()
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                false
+            }
+        }
+
+        /**
+         * Ends any stale USSD dialog still on screen (a leftover PIN/menu/confirm or
+         * the terminal balance screen) so the next dial starts with NO telephony window
+         * open. Together with [isTelephonyWindowOpen] this is how the poller guarantees
+         * a re-dial never lands on a half-torn-down session — the actual trigger for
+         * Zaad's "Internal service error". No-op if the service isn't enabled.
+         */
+        fun endOpenUssdDialog() {
+            val service = instance ?: return
+            service.mainHandler.post {
+                val root = service.resolveUssdRoot() ?: return@post
+                service.cancelOpenDialog(root)
+            }
+        }
+
+        /** How long [isTelephonyWindowOpen] blocks waiting on the a11y main thread. */
+        private const val WINDOW_QUERY_TIMEOUT_MS = 500L
+
+        /**
+         * Elapsed-realtime of the LAST moment a telephony/USSD window was seen on
+         * screen — updated on every accessibility event while one is present, so once
+         * the window closes it freezes at ≈ the session-END time. [UssdDialer] anchors
+         * its inter-dial cooldown to this (a quiet gap AFTER the prior session ended)
+         * instead of to when the dial was placed: a long balance read (~13s driving the
+         * PIN/menu) used to fully absorb a placement-anchored cooldown, letting the next
+         * `*800#` land ~1s after the prior session closed — which Zaad rejects with
+         * "Internal service error" (its server-side teardown lags the dialog close).
+         * 0 until a USSD window has ever been seen (dialer then falls back to placement).
+         */
+        @Volatile
+        private var telephonyWindowLastOpenAtMs: Long = 0L
+
+        /**
+         * The cooldown anchor for the next dial: ≈ when the previous USSD session ended
+         * (its window last seen open). 0 if no USSD window has been observed yet, so the
+         * dialer falls back to the dial-placement clock. See [telephonyWindowLastOpenAtMs].
+         */
+        fun sessionEndAnchorMs(): Long = telephonyWindowLastOpenAtMs
     }
 }
