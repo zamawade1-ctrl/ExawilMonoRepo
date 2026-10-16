@@ -97,6 +97,28 @@ export type AdminUser = z.infer<typeof adminUserSchema>;
 
 export const adminUsersSchema = z.array(adminUserSchema);
 
+// ---- Billing ledger (mirrors BillingRecordDto) -----------------------------
+// One row per activation code minted — the HISTORICAL sales record, so the billing view can show
+// revenue across every month (not just each user's current plan, which gets overwritten on redeem).
+
+export const billingRecordSchema = z.object({
+  id: z.number(),
+  userId: z.number().nullish(),
+  customerName: z.string().nullish(),
+  phone: z.string().nullish(),
+  // USD billed. null = legacy/unpriced (counts as 0 in revenue), 0 = an explicit free plan.
+  amountUsd: z.number().nullish(),
+  planKind: z.string().default(''),
+  durationMinutes: z.number().default(0),
+  createdAtUtc: z.string(),
+  isRedeemed: z.boolean().default(false),
+  redeemedAtUtc: z.string().nullish(),
+});
+
+export type BillingRecord = z.infer<typeof billingRecordSchema>;
+
+export const billingRecordsSchema = z.array(billingRecordSchema);
+
 // ---- Generated activation code (mirrors ActivationCodeDto) -----------------
 
 export const generatedCodeSchema = z.object({

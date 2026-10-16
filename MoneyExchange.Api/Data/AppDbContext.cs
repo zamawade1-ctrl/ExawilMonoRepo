@@ -23,6 +23,8 @@ public class AppDbContext : DbContext
 
     public DbSet<AppVersion> AppVersions => Set<AppVersion>();
 
+    public DbSet<BillingRecord> BillingRecords => Set<BillingRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ExchangeTransaction>(entity =>
@@ -98,6 +100,25 @@ public class AppDbContext : DbContext
             // The active-release lookup filters by platform + IsActive, then takes the
             // highest versionCode — index the first two to keep it a cheap point lookup.
             entity.HasIndex(e => new { e.Platform, e.IsActive });
+        });
+
+        modelBuilder.Entity<BillingRecord>(entity =>
+        {
+            // One billing row per activation code (written when the code is minted).
+            entity.HasIndex(e => e.ActivationCodeId).IsUnique();
+            // The billing view scans by sale date; index it for the month/day breakdown.
+            entity.HasIndex(e => e.CreatedAtUtc);
+
+            entity.HasOne(e => e.ActivationCode)
+                .WithMany()
+                .HasForeignKey(e => e.ActivationCodeId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Keep the ledger even if the account is later deleted — revenue history must survive.
+            entity.HasOne(e => e.User)
+                .WithMany()
+                .HasForeignKey(e => e.UserId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
     }
 }

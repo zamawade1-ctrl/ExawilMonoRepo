@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useUsers } from '../features/admin/useUsers';
-import { planPrice } from '../lib/plan';
-import type { AdminUser } from '../lib/schemas';
+import { useBilling } from '../features/admin/useBilling';
+import type { BillingRecord } from '../lib/schemas';
 import { PageHeader } from '../components/PageHeader';
 
 /** How the billing is grouped/filtered: by calendar month or by individual day. */
@@ -9,9 +8,9 @@ type Granularity = 'month' | 'day';
 
 const PAGE_SIZE = 10;
 
-/** One customer's payment, derived from their current paid plan. */
+/** One sale, derived from a billing-ledger row (written when the code was minted). */
 interface Payment {
-  user: AdminUser;
+  record: BillingRecord;
   /** USD billed. null = legacy/unpriced code (shown as "—", counted as 0 in revenue). */
   price: number | null;
   paidAt: string;
@@ -28,35 +27,29 @@ interface PeriodGroup {
 }
 
 /**
- * Admin billing view. Shows revenue broken down PER MONTH (or per day) and the
- * PER-USER payments behind it. The admin can switch the grouping between months
- * and days and narrow to a single month/day; the payments table is paginated.
+ * Admin billing view. Reads the HISTORICAL billing ledger (`/api/admin/billing`) — one row per
+ * activation code minted — so it shows revenue across EVERY month, not just each user's current
+ * plan. Revenue is broken down per month (or per day) with the per-sale rows behind it; the admin
+ * can switch the grouping and narrow to a single month/day, and the payments table is paginated.
  */
 export function BillingPage() {
-  const { users, loading, error, reload } = useUsers();
+  const { records, loading, error, reload } = useBilling();
 
   const [granularity, setGranularity] = useState<Granularity>('month');
   // The selected period: 'YYYY-MM' in month mode, 'YYYY-MM-DD' in day mode. Empty = all.
   const [period, setPeriod] = useState('');
   const [page, setPage] = useState(1);
 
-  // Every paying customer → one payment. (Free plans, priced at 0, are included so
-  // the counts match "who has a plan"; they simply add nothing to revenue.)
+  // Every ledger row → one payment. (Free plans, priced at 0, are included so the counts match
+  // "codes sold"; they simply add nothing to revenue.)
   const payments = useMemo<Payment[]>(() => {
-    return users
-      .filter((u) => u.role.toLowerCase() !== 'admin' && u.planKind)
-      .map((u) => {
-        const paidAt = u.planStartedAtUtc ?? u.lastModifiedAtUtc ?? u.createdAtUtc;
-        return {
-          user: u,
-          // Prefer the exact price stored at redemption (0 = free plan); fall back to the
-          // label-derived price only for legacy/unpriced codes that predate PlanPriceUsd.
-          price: u.planPriceUsd ?? planPrice(u.planKind),
-          paidAt,
-          paidAtMs: new Date(paidAt).getTime(),
-        };
-      });
-  }, [users]);
+    return records.map((r) => ({
+      record: r,
+      price: r.amountUsd ?? null,
+      paidAt: r.createdAtUtc,
+      paidAtMs: new Date(r.createdAtUtc).getTime(),
+    }));
+  }, [records]);
 
   // Filter to the selected month/day (if any), matched on the LOCAL calendar so it
   // agrees with the dates shown in the table.
@@ -85,7 +78,7 @@ export function BillingPage() {
     return [...byKey.values()].sort((a, b) => (a.key < b.key ? 1 : a.key > b.key ? -1 : 0));
   }, [filtered, granularity]);
 
-  // Payments table rows, most recent payment first.
+  // Payments table rows, most recent sale first.
   const rows = useMemo(
     () => [...filtered].sort((a, b) => b.paidAtMs - a.paidAtMs),
     [filtered],
@@ -124,7 +117,7 @@ export function BillingPage() {
     <>
       <PageHeader
         title="Billing"
-        subtitle="Revenue per month, and the payments behind it."
+        subtitle="Every plan sold, per month — the full history, not just this month's."
         action={
           <button className="btn btn-ghost" onClick={() => reload()}>
             Refresh
@@ -134,7 +127,7 @@ export function BillingPage() {
 
       {error ? (
         <div className="alert alert-error">{error}</div>
-      ) : loading && users.length === 0 ? (
+      ) : loading && records.length === 0 ? (
         <div className="page-loading">
           <span className="spinner" />
         </div>
@@ -253,7 +246,7 @@ export function BillingPage() {
             </table>
           </div>
 
-          {/* Per-user payments. */}
+          {/* Per-sale payments. */}
           <h3 className="billing-section-title">Payments</h3>
           <div className="table-card">
             <div className="table-scroll">
@@ -273,26 +266,36 @@ export function BillingPage() {
                       <span className="th-sort">Amount</span>
                     </th>
                     <th>
-                      <span className="th-sort">Paid</span>
+                      <span className="th-sort">Status</span>
+                    </th>
+                    <th>
+                      <span className="th-sort">Sold</span>
                     </th>
                   </tr>
                 </thead>
                 <tbody>
                   {pageRows.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="table-empty">
+                      <td colSpan={6} className="table-empty">
                         No payments recorded yet.
                       </td>
                     </tr>
                   ) : (
-                    pageRows.map(({ user, price, paidAt }) => (
-                      <tr key={user.userId}>
-                        <td className="cell-name">{user.fullName || '—'}</td>
-                        <td className="muted">{user.phone ?? '—'}</td>
+                    pageRows.map(({ record, price, paidAt }) => (
+                      <tr key={record.id}>
+                        <td className="cell-name">{record.customerName || '—'}</td>
+                        <td className="muted">{record.phone ?? '—'}</td>
                         <td>
-                          <span className="badge badge-pro">{user.planKind}</span>
+                          <span className="badge badge-pro">{record.planKind || '—'}</span>
                         </td>
                         <td>{price !== null ? `$${price}` : '—'}</td>
+                        <td>
+                          <span
+                            className={`badge ${record.isRedeemed ? 'badge-pro' : 'badge-trial'}`}
+                          >
+                            {record.isRedeemed ? 'Redeemed' : 'Unused'}
+                          </span>
+                        </td>
                         <td className="muted">{fmtDate(paidAt)}</td>
                       </tr>
                     ))

@@ -119,6 +119,60 @@ namespace MoneyExchange.Api.Migrations
                     b.ToTable("AppVersions");
                 });
 
+            modelBuilder.Entity("MoneyExchange.Api.Models.Entities.BillingRecord", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("ActivationCodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("AmountUsd")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CustomerName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("DurationMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsRedeemed")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("PlanKind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<DateTime?>("RedeemedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActivationCodeId")
+                        .IsUnique();
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("BillingRecords");
+                });
+
             modelBuilder.Entity("MoneyExchange.Api.Models.Entities.Customer", b =>
                 {
                     b.Property<int>("Id")
@@ -401,6 +455,24 @@ namespace MoneyExchange.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("Users");
+                });
+
+            modelBuilder.Entity("MoneyExchange.Api.Models.Entities.BillingRecord", b =>
+                {
+                    b.HasOne("MoneyExchange.Api.Models.Entities.ActivationCode", "ActivationCode")
+                        .WithMany()
+                        .HasForeignKey("ActivationCodeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MoneyExchange.Api.Models.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("ActivationCode");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("MoneyExchange.Api.Models.Entities.Customer", b =>

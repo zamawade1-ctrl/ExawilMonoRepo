@@ -118,6 +118,10 @@ class _GenerateCodeScreenState extends ConsumerState<GenerateCodeScreen> {
             priceUsd: _kind.priceUsd,
           );
       setState(() => _results = codes);
+      // Minting a code records a sale — refresh the billing ledger (and the user list, whose
+      // "latest code" columns changed) so the dashboard reflects it on the next view.
+      ref.invalidate(adminBillingProvider);
+      ref.invalidate(adminUsersProvider);
     } on AdminException catch (e) {
       setState(() => _error = e.message);
     } catch (_) {

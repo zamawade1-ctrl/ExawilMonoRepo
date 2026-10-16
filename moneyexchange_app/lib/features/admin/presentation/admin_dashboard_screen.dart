@@ -28,26 +28,6 @@ String _fmtDateTime(DateTime utc) {
   return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
 }
 
-/// Fallback USD price a plan-kind label maps to (1 month $10, 1 year $60, Forever
-/// $200), used only for legacy users redeemed before per-code prices were stored.
-int? _planPrice(String? planKind) {
-  switch ((planKind ?? '').toLowerCase()) {
-    case '1 month':
-      return 10;
-    case '1 year':
-      return 60;
-    case 'forever':
-      return 200;
-    default:
-      return null;
-  }
-}
-
-/// The exact USD amount a customer paid: the price stored with the code they
-/// redeemed (tells the $10 and $5 one-month plans apart, and $0 for a free plan),
-/// falling back to the duration-derived price for legacy pre-price redemptions.
-int? _priceForUser(AdminUser u) => u.planPriceUsd ?? _planPrice(u.planKind);
-
 /// The admin console: a two-tab shell (Overview + Users) with a bottom nav, an
 /// app-bar menu (settings / dark mode / log out), and full user management —
 /// search (phone or device label), plan filter, sort, pagination, per-user
@@ -828,42 +808,89 @@ Future<void> _run(
   }
 }
 
-/// Billing tab: customers who have paid, most recent first, with the amount their
-/// plan kind maps to and the total collected.
+/// A month's worth of sales: the count of payments and the revenue collected.
+class _MonthGroup {
+  _MonthGroup(this.key, this.label);
+  final String key; // 'YYYY-MM' (local), for sorting
+  final String label; // e.g. "August 2026"
+  int count = 0;
+  int revenue = 0;
+}
+
+/// Billing tab: the full HISTORICAL sales ledger (one row per activation code minted), broken down
+/// per month with the per-sale rows behind it. Reads `adminBillingProvider` so revenue is shown
+/// across every month, not just each user's current plan.
 class _BillingTab extends ConsumerWidget {
   const _BillingTab();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final usersAsync = ref.watch(adminUsersProvider);
-    return usersAsync.when(
+    final billingAsync = ref.watch(adminBillingProvider);
+    return billingAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (e, _) => _ErrorList(message: '$e'),
-      data: (users) {
-        final paid = users.where((u) => !u.isAdmin && u.planKind != null).toList()
-          ..sort((a, b) => (b.plan.periodStartUtc ?? b.lastModifiedAtUtc)
-              .compareTo(a.plan.periodStartUtc ?? a.lastModifiedAtUtc));
-        final total = paid.fold<int>(0, (sum, u) => sum + (_priceForUser(u) ?? 0));
+      data: (records) {
+        final sales = [...records]
+          ..sort((a, b) => b.createdAtUtc.compareTo(a.createdAtUtc));
+        final total = sales.fold<int>(0, (sum, r) => sum + (r.amountUsd ?? 0));
+
+        // Group per local calendar month, most recent first.
+        final byMonth = <String, _MonthGroup>{};
+        for (final r in sales) {
+          final d = r.createdAtUtc.toLocal();
+          final key = '${d.year}-${d.month.toString().padLeft(2, '0')}';
+          final g = byMonth.putIfAbsent(key, () => _MonthGroup(key, _monthLabel(d)));
+          g.count += 1;
+          g.revenue += r.amountUsd ?? 0;
+        }
+        final months = byMonth.values.toList()
+          ..sort((a, b) => b.key.compareTo(a.key));
 
         return RefreshIndicator(
-          onRefresh: () async => ref.invalidate(adminUsersProvider),
+          onRefresh: () async => ref.invalidate(adminBillingProvider),
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
               Row(
                 children: [
-                  Expanded(child: _BillingStat(label: 'Paying customers', value: '${paid.length}')),
+                  Expanded(child: _BillingStat(label: 'Payments', value: '${sales.length}')),
                   const SizedBox(width: 12),
                   Expanded(child: _BillingStat(label: 'Total collected', value: '\$$total')),
                 ],
               ),
               const SizedBox(height: 20),
               const _PlansCatalog(),
+              if (months.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                Text('Revenue by month', style: theme.textTheme.titleMedium),
+                const SizedBox(height: 8),
+                Card(
+                  margin: EdgeInsets.zero,
+                  child: Column(
+                    children: [
+                      for (final m in months)
+                        ListTile(
+                          dense: true,
+                          title: Text(m.label,
+                              style: theme.textTheme.bodyMedium
+                                  ?.copyWith(fontWeight: FontWeight.w600)),
+                          subtitle: Text('${m.count} payment${m.count == 1 ? '' : 's'}',
+                              style: theme.textTheme.labelSmall),
+                          trailing: Text('\$${m.revenue}',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                color: _adminAccent,
+                              )),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 20),
               Text('Payments', style: theme.textTheme.titleMedium),
               const SizedBox(height: 8),
-              if (paid.isEmpty)
+              if (sales.isEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 40),
                   child: Center(
@@ -873,8 +900,8 @@ class _BillingTab extends ConsumerWidget {
                   ),
                 )
               else
-                for (final u in paid) ...[
-                  _BillingRow(user: u, price: _priceForUser(u)),
+                for (final r in sales) ...[
+                  _BillingRow(record: r),
                   const SizedBox(height: 10),
                 ],
             ],
@@ -882,6 +909,14 @@ class _BillingTab extends ConsumerWidget {
         );
       },
     );
+  }
+
+  static String _monthLabel(DateTime local) {
+    const names = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ];
+    return '${names[local.month - 1]} ${local.year}';
   }
 }
 
@@ -977,14 +1012,14 @@ class _BillingStat extends StatelessWidget {
 }
 
 class _BillingRow extends StatelessWidget {
-  const _BillingRow({required this.user, required this.price});
-  final AdminUser user;
-  final int? price;
+  const _BillingRow({required this.record});
+  final BillingRecord record;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final paidAt = user.plan.periodStartUtc ?? user.lastModifiedAtUtc;
+    final price = record.amountUsd;
+    final soldAt = record.createdAtUtc.toLocal();
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -995,14 +1030,24 @@ class _BillingRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(user.fullName,
+                  Text(record.customerName?.isNotEmpty == true
+                          ? record.customerName!
+                          : (record.phone ?? 'Bearer code'),
                       style: theme.textTheme.titleMedium
                           ?.copyWith(fontWeight: FontWeight.w700)),
-                  Text(user.phone ?? '—', style: theme.textTheme.bodySmall),
+                  Text(record.phone ?? '—', style: theme.textTheme.bodySmall),
                   const SizedBox(height: 2),
-                  Text('${user.planKind} · ${_fmtDate(paidAt)}',
-                      style: theme.textTheme.labelSmall
-                          ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text('${record.planKind} · ${_fmtDate(soldAt)}',
+                            style: theme.textTheme.labelSmall
+                                ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                      ),
+                      const SizedBox(width: 6),
+                      _RedeemedChip(redeemed: record.isRedeemed),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -1019,6 +1064,30 @@ class _BillingRow extends StatelessWidget {
 
   static String _fmtDate(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+}
+
+/// Small pill showing whether the sold code has been redeemed yet.
+class _RedeemedChip extends StatelessWidget {
+  const _RedeemedChip({required this.redeemed});
+  final bool redeemed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = redeemed ? _adminAccent : theme.colorScheme.tertiary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(redeemed ? 'Redeemed' : 'Unused',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: color,
+            fontWeight: FontWeight.w800,
+          )),
+    );
+  }
 }
 
 class _ErrorList extends StatelessWidget {

@@ -68,6 +68,13 @@ public class AdminRepository : IAdminRepository
             var assignedPhone = PhoneNumberUtil.Normalize(dto.Phone);
             var assigned = assignedPhone.Length > 0 ? assignedPhone : null;
 
+            // Resolve the buyer once (all codes in a batch share the same phone) so each billing row
+            // can snapshot the customer's name + link the account. Null for a bearer code or a phone
+            // that has no account yet.
+            var buyer = assigned is null
+                ? null
+                : await _context.Users.FirstOrDefaultAsync(u => u.PhoneNumber == assigned);
+
             // Expiry in minutes: explicit minutes win, else days→minutes, else default; 0 = never.
             var expiryMinutes = dto.ExpiresInMinutes ?? (dto.ExpiresInDays is int ed ? ed * 24 * 60 : DefaultExpiryMinutes);
             var now = DateTime.UtcNow;
@@ -94,6 +101,22 @@ public class AdminRepository : IAdminRepository
                     CreatedAtUtc = now
                 };
                 await _context.ActivationCodes.AddAsync(activation);
+
+                // Record the sale in the permanent billing ledger the instant the code is minted, so
+                // the admin billing view keeps full history (every month), independent of whether the
+                // customer redeems and independent of the live plan on the User (which gets overwritten
+                // on the next redemption). Linked to the code via the same EF change-tracked instance.
+                await _context.BillingRecords.AddAsync(new BillingRecord
+                {
+                    ActivationCode = activation,
+                    UserId = buyer?.Id,
+                    Phone = assigned,
+                    CustomerName = buyer?.FullName,
+                    AmountUsd = priceUsd,
+                    PlanKind = planKind ?? string.Empty,
+                    DurationMinutes = durationMinutes,
+                    CreatedAtUtc = now
+                });
 
                 results.Add(new ActivationCodeDto
                 {
@@ -310,6 +333,37 @@ public class AdminRepository : IAdminRepository
         {
             _logger.LogError(ex, "Admin failed to list users.");
             return ServiceResponse<List<AdminUserDto>>.Error("Could not load users.");
+        }
+    }
+
+    public async Task<ServiceResponse<List<BillingRecordDto>>> ListBillingAsync()
+    {
+        try
+        {
+            var rows = await _context.BillingRecords
+                .OrderByDescending(b => b.CreatedAtUtc)
+                .ThenByDescending(b => b.Id)
+                .Select(b => new BillingRecordDto
+                {
+                    Id = b.Id,
+                    UserId = b.UserId,
+                    CustomerName = b.CustomerName,
+                    Phone = b.Phone,
+                    AmountUsd = b.AmountUsd,
+                    PlanKind = b.PlanKind,
+                    DurationMinutes = b.DurationMinutes,
+                    CreatedAtUtc = b.CreatedAtUtc,
+                    IsRedeemed = b.IsRedeemed,
+                    RedeemedAtUtc = b.RedeemedAtUtc
+                })
+                .ToListAsync();
+
+            return ServiceResponse<List<BillingRecordDto>>.Ok(rows);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin failed to list billing records.");
+            return ServiceResponse<List<BillingRecordDto>>.Error("Could not load billing records.");
         }
     }
 

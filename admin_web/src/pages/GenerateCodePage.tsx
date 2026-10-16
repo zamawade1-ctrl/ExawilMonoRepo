@@ -97,6 +97,9 @@ export function GenerateCodePage() {
     try {
       const codes = await adminApi.generateCodes(parsed.data);
       setResults(codes);
+      // Minting a code records a sale — refresh the billing ledger in the background so it's
+      // up to date when the admin opens the Billing page.
+      void import('../store/billing').then((m) => m.useBillingStore.getState().reload());
       toast.success(
         codes.length === 1 ? 'Activation code generated.' : `${codes.length} codes generated.`,
       );

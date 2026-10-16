@@ -153,6 +153,21 @@ public class SubscriptionRepository : ISubscriptionRepository
             activation.RedeemedByUserId = userId;
             activation.RedeemedAtUtc = now;
 
+            // Reflect the redemption on the code's billing-ledger row so the admin billing view can
+            // show used vs unused sales — and back-fill the buyer if the code was minted as a bearer
+            // code (no phone) that this account has now consumed.
+            var billing = await _context.BillingRecords
+                .FirstOrDefaultAsync(b => b.ActivationCodeId == activation.Id);
+            if (billing is not null)
+            {
+                billing.IsRedeemed = true;
+                billing.RedeemedAtUtc = now;
+                billing.UserId ??= user.Id;
+                if (string.IsNullOrEmpty(billing.CustomerName)) billing.CustomerName = user.FullName;
+                if (string.IsNullOrEmpty(billing.Phone))
+                    billing.Phone = PhoneNumberUtil.Normalize(user.PhoneNumber);
+            }
+
             await _context.SaveChangesAsync();
 
             _logger.LogInformation(

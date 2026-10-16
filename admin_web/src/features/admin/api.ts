@@ -1,8 +1,10 @@
 import { apiRequest } from '../../lib/api';
 import {
   adminUsersSchema,
+  billingRecordsSchema,
   generatedCodesSchema,
   type AdminUser,
+  type BillingRecord,
   type GeneratedCode,
 } from '../../lib/schemas';
 
@@ -15,6 +17,10 @@ export const adminApi = {
   /** All accounts with their live plan snapshot (the dashboard feed). */
   listUsers: (): Promise<AdminUser[]> =>
     apiRequest('/api/admin/users', { schema: adminUsersSchema }),
+
+  /** The historical billing ledger — one row per activation code minted, newest first. */
+  listBilling: (): Promise<BillingRecord[]> =>
+    apiRequest('/api/admin/billing', { schema: billingRecordsSchema }),
 
   /**
    * Mints `count` activation code(s) bound to `phone`, granting `durationMinutes`

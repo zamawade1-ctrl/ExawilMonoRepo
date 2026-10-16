@@ -27,6 +27,11 @@ public class AdminController : ApiControllerBase
     public async Task<IActionResult> ListUsers()
         => HandleResponse(await _adminRepository.ListUsersAsync());
 
+    // GET: api/admin/billing  → the historical billing ledger (one row per activation code minted)
+    [HttpGet("billing")]
+    public async Task<IActionResult> ListBilling()
+        => HandleResponse(await _adminRepository.ListBillingAsync());
+
     // POST: api/admin/activation-codes  → mint code(s) (phone-bound, minute-precise duration + expiry)
     [HttpPost("activation-codes")]
     public async Task<IActionResult> GenerateCodes([FromBody] GenerateActivationCodesDto dto)

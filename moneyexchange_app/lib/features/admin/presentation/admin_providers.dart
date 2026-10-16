@@ -12,3 +12,8 @@ final adminApiProvider = Provider(
 final adminUsersProvider = FutureProvider<List<AdminUser>>(
   (ref) => ref.watch(adminApiProvider).listUsers(),
 );
+
+/// The historical billing ledger (one row per activation code minted). Re-fetch with `ref.invalidate`.
+final adminBillingProvider = FutureProvider<List<BillingRecord>>(
+  (ref) => ref.watch(adminApiProvider).listBilling(),
+);

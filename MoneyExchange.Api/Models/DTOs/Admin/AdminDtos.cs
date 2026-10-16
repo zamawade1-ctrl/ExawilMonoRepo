@@ -55,6 +55,42 @@ public class UpdatePhoneDto
     public string NewPhone { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// One row of the admin billing ledger — a single sale, recorded when an activation code was
+/// generated for a customer. This is historical (never overwritten), so the billing view can show
+/// revenue across every month, not just each user's current plan.
+/// </summary>
+public class BillingRecordDto
+{
+    public int Id { get; set; }
+
+    /// <summary>The account this sale was for, or null for a bearer code / not-yet-registered phone.</summary>
+    public int? UserId { get; set; }
+
+    /// <summary>The customer's name at sale time (snapshot), or null for a bearer code.</summary>
+    public string? CustomerName { get; set; }
+
+    /// <summary>The phone the code was issued to, or null for a bearer code.</summary>
+    public string? Phone { get; set; }
+
+    /// <summary>USD amount billed. Null = unpriced/legacy (counts as 0); 0 = an explicit free plan.</summary>
+    public int? AmountUsd { get; set; }
+
+    /// <summary>The plan-kind label ("1 month", "6 months", "1 year", "Forever", ...).</summary>
+    public string PlanKind { get; set; } = string.Empty;
+
+    public int DurationMinutes { get; set; }
+
+    /// <summary>When the sale was recorded (= when the code was generated). Drives the month/day breakdown.</summary>
+    public DateTime CreatedAtUtc { get; set; }
+
+    /// <summary>Whether the customer has redeemed the code this sale represents.</summary>
+    public bool IsRedeemed { get; set; }
+
+    /// <summary>When the code was redeemed, or null if still unused.</summary>
+    public DateTime? RedeemedAtUtc { get; set; }
+}
+
 /// <summary>One row of the admin "all users" view: identity + their live plan snapshot.</summary>
 public class AdminUserDto
 {

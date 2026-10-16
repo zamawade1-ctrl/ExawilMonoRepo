@@ -104,8 +104,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signOut: () => {
     clearSession();
     set({ user: null, token: null });
-    // Drop the cached feed so the next admin to sign in never sees the previous admin's rows.
+    // Drop the cached feeds so the next admin to sign in never sees the previous admin's rows.
     void import('./users').then((m) => m.useUsersStore.getState().clear());
+    void import('./billing').then((m) => m.useBillingStore.getState().clear());
   },
 
   isAdmin: () => get().user?.role.toLowerCase() === 'admin',

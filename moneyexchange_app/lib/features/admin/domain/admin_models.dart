@@ -74,6 +74,54 @@ class AdminUser {
   );
 }
 
+/// One row of the admin billing ledger — a single sale, recorded when an activation code was
+/// generated for a customer. Historical (never overwritten), so the billing view shows revenue
+/// across every month rather than only each user's current plan.
+class BillingRecord {
+  const BillingRecord({
+    required this.id,
+    this.userId,
+    this.customerName,
+    this.phone,
+    this.amountUsd,
+    required this.planKind,
+    required this.durationMinutes,
+    required this.createdAtUtc,
+    this.isRedeemed = false,
+    this.redeemedAtUtc,
+  });
+
+  final int id;
+  final int? userId;
+  final String? customerName;
+  final String? phone;
+
+  /// USD billed. Null = unpriced/legacy (counts as 0); 0 = an explicit free plan.
+  final int? amountUsd;
+  final String planKind;
+  final int durationMinutes;
+
+  /// When the sale was recorded (= when the code was generated). Drives the month/day breakdown.
+  final DateTime createdAtUtc;
+  final bool isRedeemed;
+  final DateTime? redeemedAtUtc;
+
+  factory BillingRecord.fromJson(Map<String, dynamic> json) => BillingRecord(
+    id: json['id'] as int,
+    userId: (json['userId'] as num?)?.toInt(),
+    customerName: json['customerName'] as String?,
+    phone: json['phone'] as String?,
+    amountUsd: (json['amountUsd'] as num?)?.toInt(),
+    planKind: json['planKind'] as String? ?? '',
+    durationMinutes: (json['durationMinutes'] as num?)?.toInt() ?? 0,
+    createdAtUtc: DateTime.parse(json['createdAtUtc'] as String).toUtc(),
+    isRedeemed: json['isRedeemed'] as bool? ?? false,
+    redeemedAtUtc: json['redeemedAtUtc'] == null
+        ? null
+        : DateTime.parse(json['redeemedAtUtc'] as String).toUtc(),
+  );
+}
+
 /// A freshly-minted activation code returned to the admin.
 class GeneratedCode {
   const GeneratedCode({

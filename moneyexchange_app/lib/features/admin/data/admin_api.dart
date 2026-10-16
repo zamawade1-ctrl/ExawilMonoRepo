@@ -29,6 +29,17 @@ class AdminApi {
     }
   }
 
+  /// The historical billing ledger — one row per activation code minted, newest first.
+  Future<List<BillingRecord>> listBilling() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>('/api/admin/billing');
+      final list = (response.data!['data'] as List).cast<Map<String, dynamic>>();
+      return list.map(BillingRecord.fromJson).toList();
+    } on DioException catch (e) {
+      throw AdminException(_messageFor(e));
+    }
+  }
+
   /// Mints [count] activation code(s) bound to [phone], granting [durationMinutes]
   /// (or a forever plan when [forever]), expiring in [expiresInMinutes] (0 = never).
   /// Returns all generated codes.

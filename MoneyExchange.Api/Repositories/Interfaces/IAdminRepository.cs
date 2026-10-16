@@ -28,4 +28,7 @@ public interface IAdminRepository
 
     /// <summary>All customer accounts with their live plan snapshot, for the admin dashboard.</summary>
     Task<ServiceResponse<List<AdminUserDto>>> ListUsersAsync();
+
+    /// <summary>The full billing ledger (one row per activation code minted), newest sale first.</summary>
+    Task<ServiceResponse<List<BillingRecordDto>>> ListBillingAsync();
 }
