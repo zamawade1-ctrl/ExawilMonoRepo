@@ -15,7 +15,7 @@ class AppConfig {
   /// The LIVE production backend. Always available as a fallback target — see
   /// [apiBaseUrl] and the connection-failure fallback in `ApiClient`.
   static const String productionApiBaseUrl =
-      'https://moneyexchaneautoussd.onrender.com';
+      'https://exawilmonorepo.onrender.com';
 
   /// Base URL of MoneyExchange.Api. Defaults to the LIVE production backend so
   /// a release build is always pointed at the hosted API even if no
