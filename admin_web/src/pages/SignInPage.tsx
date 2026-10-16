@@ -89,7 +89,7 @@ export function SignInPage() {
           </p>
    
         </div>
-        <p className="signin-brand-foot">Authorized administrators only.</p>
+        <p className="signin-brand-foot">Authorized administrators only!</p>
       </section>
 
       {/* Right: white form panel */}
