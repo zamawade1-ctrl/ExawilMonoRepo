@@ -152,7 +152,7 @@ export function BillingPage() {
               </div>
             </div>
 
-            <div className="billing-filter">
+            <div className="Billing filter">
               <span className="billing-filter-label">
                 {granularity === 'month' ? 'Month' : 'Day'}
               </span>
